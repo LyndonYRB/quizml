@@ -36,6 +36,8 @@ async function upsertEntitlement(params: {
   isPaid: boolean;
   subscriptionStatus?: string | null;
   currentPeriodEnd?: string | null; // ISO
+  priceId?: string | null;
+  cancelAtPeriodEnd?: boolean;
 }) {
   const {
     userId,
@@ -45,25 +47,34 @@ async function upsertEntitlement(params: {
     isPaid,
     subscriptionStatus,
     currentPeriodEnd,
+    priceId,
+    cancelAtPeriodEnd,
   } = params;
+
+  const profileUpdates: Record<string, unknown> = {
+    user_id: userId,
+    plan,
+    is_paid: isPaid,
+    stripe_customer_id: stripeCustomerId ?? null,
+    stripe_subscription_id: stripeSubscriptionId ?? null,
+    subscription_status: subscriptionStatus ?? null,
+    current_period_end: currentPeriodEnd
+      ? new Date(currentPeriodEnd).toISOString()
+      : null,
+    updated_at: new Date().toISOString(),
+  };
+
+  if (priceId !== undefined) {
+    profileUpdates.price_id = priceId;
+  }
+
+  if (cancelAtPeriodEnd !== undefined) {
+    profileUpdates.cancel_at_period_end = cancelAtPeriodEnd;
+  }
 
   const { error } = await supabaseAdmin
     .from("profiles")
-    .upsert(
-      {
-        user_id: userId,
-        plan,
-        is_paid: isPaid,
-        stripe_customer_id: stripeCustomerId ?? null,
-        stripe_subscription_id: stripeSubscriptionId ?? null,
-        subscription_status: subscriptionStatus ?? null,
-        current_period_end: currentPeriodEnd
-          ? new Date(currentPeriodEnd).toISOString()
-          : null,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "user_id" }
-    );
+    .upsert(profileUpdates, { onConflict: "user_id" });
 
   if (error) throw new Error("profiles upsert failed: " + error.message);
 }
@@ -122,6 +133,8 @@ async function syncSubscriptionEntitlement(sub: Stripe.Subscription) {
     isPaid,
     subscriptionStatus: sub.status,
     currentPeriodEnd: periodEndFromSubscription(sub),
+    priceId,
+    cancelAtPeriodEnd: sub.cancel_at_period_end,
   });
 }
 
@@ -172,6 +185,8 @@ export async function POST(req: NextRequest) {
         isPaid: session.payment_status === "paid",
         subscriptionStatus: session.status,
         currentPeriodEnd: null,
+        priceId: null,
+        cancelAtPeriodEnd: false,
       });
 
       return NextResponse.json({ received: true });
@@ -203,6 +218,8 @@ export async function POST(req: NextRequest) {
         isPaid: false,
         subscriptionStatus: sub.status,
         currentPeriodEnd: null,
+        priceId: null,
+        cancelAtPeriodEnd: false,
       });
 
       return NextResponse.json({ received: true });

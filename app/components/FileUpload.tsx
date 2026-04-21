@@ -61,6 +61,8 @@ interface UsageResponse {
     plan?: string;
     subscriptionStatus?: string | null;
     currentPeriodEnd?: string | null;
+    priceId?: string | null;
+    cancelAtPeriodEnd?: boolean;
   };
 }
 
@@ -235,6 +237,8 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
   const [isPaid, setIsPaid] = useState(false);
   const [planName, setPlanName] = useState("free");
   const [subscriptionStatus, setSubscriptionStatus] = useState<string | null>(null);
+  const [currentPeriodEnd, setCurrentPeriodEnd] = useState<string | null>(null);
+  const [cancelAtPeriodEnd, setCancelAtPeriodEnd] = useState(false);
 
     /* ---------------------------------------------------------
      STATE: Review Due (Spaced repetition)
@@ -260,6 +264,8 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
       setIsPaid(false);
       setPlanName("free");
       setSubscriptionStatus(null);
+      setCurrentPeriodEnd(null);
+      setCancelAtPeriodEnd(false);
       return;
     }
 
@@ -280,6 +286,8 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
           setIsPaid(Boolean(data.usage.isPaid));
           setPlanName(data.usage.plan ?? "free");
           setSubscriptionStatus(data.usage.subscriptionStatus ?? null);
+          setCurrentPeriodEnd(data.usage.currentPeriodEnd ?? null);
+          setCancelAtPeriodEnd(Boolean(data.usage.cancelAtPeriodEnd));
         }
       } catch {
         // Silent fail: backend still enforces limits
@@ -904,6 +912,8 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
         isPaid={isPaid}
         planName={planName}
         subscriptionStatus={subscriptionStatus}
+        currentPeriodEnd={currentPeriodEnd}
+        cancelAtPeriodEnd={cancelAtPeriodEnd}
         onOpenAuth={onOpenAuth}
       />
 

@@ -15,6 +15,8 @@ create table if not exists public.profiles (
   stripe_subscription_id text unique,
   subscription_status text,
   current_period_end timestamptz,
+  price_id text,
+  cancel_at_period_end boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -28,6 +30,12 @@ alter table public.profiles
 
 alter table public.profiles
   add column if not exists current_period_end timestamptz;
+
+alter table public.profiles
+  add column if not exists price_id text;
+
+alter table public.profiles
+  add column if not exists cancel_at_period_end boolean not null default false;
 
 create or replace function public.handle_new_user_profile()
 returns trigger

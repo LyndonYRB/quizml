@@ -49,7 +49,9 @@ export async function GET(request: NextRequest) {
 
     const { data: profile } = await supabase
       .from("profiles")
-      .select("is_paid, plan, subscription_status, current_period_end")
+      .select(
+        "is_paid, plan, subscription_status, current_period_end, price_id, cancel_at_period_end"
+      )
       .eq("user_id", userId)
       .maybeSingle();
 
@@ -92,6 +94,8 @@ export async function GET(request: NextRequest) {
         plan: profile?.plan ?? "free",
         subscriptionStatus: profile?.subscription_status ?? null,
         currentPeriodEnd: profile?.current_period_end ?? null,
+        priceId: profile?.price_id ?? null,
+        cancelAtPeriodEnd: profile?.cancel_at_period_end ?? false,
       },
     });
   } catch (e) {
