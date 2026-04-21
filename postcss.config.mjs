@@ -1,6 +1,12 @@
+import path from "node:path";
+
+const projectRoot = path.resolve(process.cwd());
+
 const config = {
   plugins: {
-    "@tailwindcss/postcss": {},
+    "@tailwindcss/postcss": {
+      base: projectRoot,
+    },
   },
 };
 
