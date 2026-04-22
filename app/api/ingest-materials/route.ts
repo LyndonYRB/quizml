@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { splitTextIntoChunks } from "@/lib/chunking";
-import { buildChunkRowsSequentially } from "@/lib/ingestion-embeddings";
+import {
+  buildChunkRowsSequentially,
+  insertChunkRowsWithVectorFallback,
+} from "@/lib/ingestion-embeddings";
 import {
   createRouteClient,
   createServiceRoleClient,
@@ -92,9 +95,29 @@ export async function POST(request: NextRequest) {
     const chunkCounts: Record<string, number> = {};
 
     for (const file of files) {
-      const bytes = await file.arrayBuffer();
-      const { text } = await extractText(new Uint8Array(bytes), {
-        mergePages: true,
+      let text = "";
+      try {
+        const bytes = await file.arrayBuffer();
+        const extracted = await extractText(new Uint8Array(bytes), {
+          mergePages: true,
+        });
+        text = extracted.text ?? "";
+      } catch (error) {
+        console.error("ingest-materials text extraction failed:", {
+          fileName: file.name,
+          fileSize: file.size,
+          message: error instanceof Error ? error.message : "Unknown error",
+        });
+        return NextResponse.json(
+          { error: `Could not read text from ${file.name}.` },
+          { status: 400 }
+        );
+      }
+
+      console.log("ingest-materials text extracted:", {
+        fileName: file.name,
+        fileSize: file.size,
+        extractedTextLength: text.length,
       });
 
       if (!text || text.length < MIN_EXTRACTED_CHARS) {
@@ -105,6 +128,11 @@ export async function POST(request: NextRequest) {
       }
 
       const chunks = splitTextIntoChunks(text);
+      console.log("ingest-materials chunks created:", {
+        fileName: file.name,
+        chunkCount: chunks.length,
+      });
+
       if (chunks.length === 0) {
         return NextResponse.json(
           { error: `Could not create usable chunks from ${file.name}.` },
@@ -125,12 +153,23 @@ export async function POST(request: NextRequest) {
         .single();
 
       if (materialErr || !material) {
-        console.error("study_materials ingest insert error:", materialErr?.message);
+        console.error("study_materials ingest insert error:", {
+          fileName: file.name,
+          message: materialErr?.message,
+          code: materialErr?.code,
+          details: materialErr?.details,
+        });
         return NextResponse.json(
           { error: "Failed to save study material." },
           { status: 500 }
         );
       }
+
+      console.log("ingest-materials material inserted:", {
+        userId,
+        materialId: material.id,
+        fileName: file.name,
+      });
 
       const {
         chunkRowsWithEmbeddings,
@@ -145,32 +184,19 @@ export async function POST(request: NextRequest) {
         logLabel: "ingest-materials",
       });
 
-      if (chunkRowsWithEmbeddings.length > 0) {
-        const { error: chunkErr } = await supabaseAdmin
-          .from("study_material_chunks")
-          .insert(chunkRowsWithEmbeddings);
+      const chunkInsert = await insertChunkRowsWithVectorFallback({
+        supabaseAdmin,
+        withEmbeddings: chunkRowsWithEmbeddings,
+        withoutEmbeddings: chunkRowsWithoutEmbeddings,
+        logLabel: "ingest-materials",
+        materialId: material.id,
+      });
 
-        if (chunkErr) {
-          console.error("study_material_chunks insert error:", chunkErr.message);
-          return NextResponse.json(
-            { error: "Failed to save material chunks." },
-            { status: 500 }
-          );
-        }
-      }
-
-      if (chunkRowsWithoutEmbeddings.length > 0) {
-        const { error: chunkErr } = await supabaseAdmin
-          .from("study_material_chunks")
-          .insert(chunkRowsWithoutEmbeddings);
-
-        if (chunkErr) {
-          console.error("study_material_chunks insert error:", chunkErr.message);
-          return NextResponse.json(
-            { error: "Failed to save material chunks." },
-            { status: 500 }
-          );
-        }
+      if (chunkInsert.error) {
+        return NextResponse.json(
+          { error: "Failed to save material chunks." },
+          { status: 500 }
+        );
       }
 
       savedMaterials.push(material);
@@ -179,8 +205,8 @@ export async function POST(request: NextRequest) {
       console.log("ingest-materials chunk rows inserted:", {
         userId,
         materialId: material.id,
-        withEmbeddings: chunkRowsWithEmbeddings.length,
-        withoutEmbeddings: chunkRowsWithoutEmbeddings.length,
+        withEmbeddings: chunkInsert.insertedWithEmbeddings,
+        withoutEmbeddings: chunkInsert.insertedWithoutEmbeddings,
       });
 
       console.log("ingest-materials material ingested:", {

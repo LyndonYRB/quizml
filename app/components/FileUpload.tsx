@@ -93,6 +93,7 @@ interface IngestMaterialsResponse {
   studyMaterials?: StudyMaterial[];
   chunkCounts?: Record<string, number>;
   error?: string;
+  message?: string;
 }
 
 
@@ -226,6 +227,10 @@ function formatMaterialDate(value: string) {
 function filesDisplayName(files: File[]) {
   if (files.length === 1) return files[0].name;
   return `${files.length} files`;
+}
+
+function fileIdentity(file: File) {
+  return `${file.name}:${file.size}:${file.lastModified}`;
 }
 
 function materialsSignature(materialIds: string[]) {
@@ -460,15 +465,33 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
     const selectedFiles = Array.from(e.target.files ?? []);
     if (selectedFiles.length === 0) return;
 
-    const nextFiles = isPaid ? selectedFiles : selectedFiles.slice(0, 1);
-
     if (!isPaid && selectedFiles.length > 1) {
       alert("Free plan supports one PDF at a time. Only the first file was selected.");
     }
 
-    const oversizedFile = nextFiles.find((selected) => selected.size > maxFileBytes);
+    const candidateFiles = isPaid ? selectedFiles : selectedFiles.slice(0, 1);
+    const oversizedFile = candidateFiles.find((selected) => selected.size > maxFileBytes);
     if (oversizedFile) {
       alert(`${oversizedFile.name} exceeds the ${maxFileMb}MB limit for your plan.`);
+      e.target.value = "";
+      return;
+    }
+
+    const nextFiles = isPaid
+      ? [
+          ...files,
+          ...candidateFiles.filter(
+            (candidate) =>
+              !files.some(
+                (currentFile) => fileIdentity(currentFile) === fileIdentity(candidate)
+              )
+          ),
+        ]
+      : candidateFiles;
+
+    if (isPaid && nextFiles.length === files.length) {
+      alert("Those files are already selected.");
+      e.target.value = "";
       return;
     }
 
@@ -480,6 +503,7 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
     setInitialProgress(null);
     clearActiveLessonRunReference(userId);
     setShowFocusForm(false);
+    e.target.value = "";
   }
 
   function handleUploadClick() {
@@ -640,9 +664,14 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
         .catch(() => ({}))) as IngestMaterialsResponse;
 
       if (!ingestResponse.ok || !ingestData.success) {
+        console.error("Ingestion failed:", ingestData);
         setUploading(false);
         setLoadingMsg("");
-        alert(ingestData.error || "Failed to ingest study material.");
+        alert(
+          ingestData.message ||
+            ingestData.error ||
+            "Failed to ingest study material."
+        );
         return;
       }
 
