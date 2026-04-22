@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { splitTextIntoChunks } from "@/lib/chunking";
 import { embedText } from "@/lib/embeddings";
-import { createRouteClient } from "@/lib/supabase/server";
+import {
+  createRouteClient,
+  createServiceRoleClient,
+} from "@/lib/supabase/server";
 
 const MAX_PDF_BYTES_FREE = 10 * 1024 * 1024;
 const MAX_PDF_BYTES_PAID = 50 * 1024 * 1024;
@@ -26,6 +29,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const supabase = createRouteClient(request, response);
+    const supabaseAdmin = createServiceRoleClient();
     const { data: userData, error: userErr } = await supabase.auth.getUser();
 
     if (userErr || !userData?.user) {
@@ -109,7 +113,7 @@ export async function POST(request: NextRequest) {
       }
 
       const materialId = crypto.randomUUID();
-      const { data: material, error: materialErr } = await supabase
+      const { data: material, error: materialErr } = await supabaseAdmin
         .from("study_materials")
         .insert({
           id: materialId,
@@ -149,7 +153,7 @@ export async function POST(request: NextRequest) {
         })
       );
 
-      const { error: chunkErr } = await supabase
+      const { error: chunkErr } = await supabaseAdmin
         .from("study_material_chunks")
         .insert(chunkRows);
 

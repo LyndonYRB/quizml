@@ -17,7 +17,10 @@ import {
 } from "@/lib/retrieval";
 import { rerankRetrievedChunks } from "@/lib/rerank";
 import { RAG_CONFIG } from "@/lib/rag-config";
-import { createRouteClient } from "@/lib/supabase/server";
+import {
+  createRouteClient,
+  createServiceRoleClient,
+} from "@/lib/supabase/server";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -77,6 +80,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const supabase = createRouteClient(request, response);
+    const supabaseAdmin = createServiceRoleClient();
     const { data: userData, error: userErr } = await supabase.auth.getUser();
 
     if (userErr || !userData?.user) {
@@ -179,7 +183,7 @@ export async function POST(request: NextRequest) {
       }
 
       const materialId = crypto.randomUUID();
-      const { data: material, error: materialErr } = await supabase
+      const { data: material, error: materialErr } = await supabaseAdmin
         .from("study_materials")
         .insert({
           id: materialId,
@@ -221,7 +225,7 @@ export async function POST(request: NextRequest) {
         })
       );
 
-      const { error: chunkErr } = await supabase
+      const { error: chunkErr } = await supabaseAdmin
         .from("study_material_chunks")
         .insert(chunkRows);
 
