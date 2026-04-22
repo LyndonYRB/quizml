@@ -5,7 +5,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
 import { splitTextIntoChunks } from "@/lib/chunking";
-import { embedText } from "@/lib/embeddings";
+import { buildChunkRowsSequentially } from "@/lib/ingestion-embeddings";
 import {
   generateValidatedLessonSet,
   LESSON_RUN_SCHEMA_VERSION,
@@ -204,26 +204,17 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      const chunkRows = await Promise.all(
-        chunks.map(async (chunk) => {
-          const embedding = await embedText(chunk.content).catch((error) => {
-            console.error(
-              "Chunk embedding failed:",
-              error instanceof Error ? error.message : "Unknown error"
-            );
-            return null;
-          });
-
-          return {
-            user_id: userId,
-            study_material_id: material.id,
-            chunk_index: chunk.chunkIndex,
-            content: chunk.content,
-            token_count: chunk.tokenCount,
-            embedding,
-          };
-        })
-      );
+      const {
+        chunkRows,
+        embeddingSuccessCount,
+        embeddingFailureCount,
+        embeddingMode,
+      } = await buildChunkRowsSequentially({
+        chunks,
+        userId,
+        materialId: material.id,
+        logLabel: "process-pdf",
+      });
 
       const { error: chunkErr } = await supabaseAdmin
         .from("study_material_chunks")
@@ -246,8 +237,9 @@ export async function POST(request: NextRequest) {
         materialId: material.id,
         fileName: file.name,
         chunkCount: chunks.length,
-        embeddingSuccessCount: chunkRows.filter((row) => row.embedding).length,
-        embeddingFailureCount: chunkRows.filter((row) => !row.embedding).length,
+        embeddingSuccessCount,
+        embeddingFailureCount,
+        embeddingMode,
       });
     }
 
