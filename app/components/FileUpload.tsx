@@ -53,6 +53,13 @@ interface ReviewDueRow {
   streak?: unknown;
 }
 
+interface StudyMaterial {
+  id: string;
+  file_name: string;
+  file_url: string;
+  created_at: string;
+}
+
 interface UsageResponse {
   usage?: {
     remaining?: number;
@@ -72,6 +79,12 @@ interface LessonRunResponse {
   lessons?: Lesson[];
   finalTest?: QuizQuestion[];
   progress?: Partial<LessonProgressState> | null;
+  error?: string;
+}
+
+interface StudyMaterialsResponse {
+  success?: boolean;
+  studyMaterials?: StudyMaterial[];
   error?: string;
 }
 
@@ -192,6 +205,17 @@ function readStoredRunProgress(userId: string, lessonRunId: string) {
   }
 }
 
+function formatMaterialDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(date);
+}
+
 /* =========================================================
    COMPONENT
 ========================================================= */
@@ -247,6 +271,7 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
   const [reviewDue, setReviewDue] = useState<ReviewDueItem[]>([]);
   const [reviewLoading, setReviewLoading] = useState(false);
   const [showReviewScreen, setShowReviewScreen] = useState(false);
+  const [studyMaterials, setStudyMaterials] = useState<StudyMaterial[]>([]);
 
   const maxFileBytes = isPaid ? MAX_FILE_BYTES_PAID : MAX_FILE_BYTES_FREE;
   const maxFileMb = maxFileBytes / 1024 / 1024;
@@ -266,6 +291,7 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
       setSubscriptionStatus(null);
       setCurrentPeriodEnd(null);
       setCancelAtPeriodEnd(false);
+      setStudyMaterials([]);
       return;
     }
 
@@ -293,6 +319,36 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
         // Silent fail: backend still enforces limits
       }
     })();
+
+      return () => {
+        cancelled = true;
+      };
+    }, [isAuthed, userId]);
+
+    /* ---------------------------------------------------------
+      EFFECT: Load all saved study materials after auth
+    --------------------------------------------------------- */
+
+    useEffect(() => {
+      if (!isAuthed) {
+        setStudyMaterials([]);
+        return;
+      }
+
+      let cancelled = false;
+
+      (async () => {
+        try {
+          const res = await fetch("/api/study-materials", { method: "GET" });
+          const data = (await res.json().catch(() => ({}))) as StudyMaterialsResponse;
+
+          if (!cancelled && res.ok && Array.isArray(data.studyMaterials)) {
+            setStudyMaterials(data.studyMaterials);
+          }
+        } catch {
+          // Silent fail: upload/generation still works without the list.
+        }
+      })();
 
       return () => {
         cancelled = true;
@@ -592,6 +648,17 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
         setUsageLimit(data.usage.limit);
       }
 
+      if (isAuthed && isPaid) {
+        const materialsRes = await fetch("/api/study-materials", { method: "GET" });
+        const materialsData = (await materialsRes
+          .json()
+          .catch(() => ({}))) as StudyMaterialsResponse;
+
+        if (materialsRes.ok && Array.isArray(materialsData.studyMaterials)) {
+          setStudyMaterials(materialsData.studyMaterials);
+        }
+      }
+
 
       // Cache results
       const cacheData: CachedLesson = {
@@ -847,7 +914,46 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
         </div>
       )}
 
+      {studyMaterials.length > 0 && (
+        <div className="mb-4 rounded-lg border border-white/10 bg-gray-700 p-4">
+          <h3 className="text-sm font-semibold text-white">Your study materials</h3>
+          <ul className="mt-3 space-y-2">
+            {studyMaterials.map((material) => (
+              <li
+                key={material.id}
+                className="flex items-center justify-between gap-3 rounded bg-gray-800 px-3 py-2"
+              >
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-gray-100">
+                    {material.file_name}
+                  </p>
+                  <p className="text-xs text-gray-400">
+                    {formatMaterialDate(material.created_at)}
+                  </p>
+                </div>
+                <a
+                  href={material.file_url}
+                  className="shrink-0 text-sm font-semibold text-blue-400 hover:text-blue-300"
+                >
+                  Open
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* File input */}
+      {!isPaid && (
+        <div className="mb-4 rounded-lg border border-blue-400/30 bg-blue-500/10 p-4">
+          <p className="text-sm font-semibold text-blue-100">Free plan</p>
+          <p className="mt-1 text-sm text-blue-100/80">
+            You can upload one PDF at a time. Upgrade to Pro to save and use
+            multiple study materials.
+          </p>
+        </div>
+      )}
+
       <div className="mb-6">
         <label className="block mb-2 text-sm text-gray-300">
           Choose a PDF file (max {maxFileMb}MB for {isPaid ? "paid" : "free"} plan)

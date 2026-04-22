@@ -17,6 +17,7 @@ const MAX_PDF_BYTES_PAID = 50 * 1024 * 1024;
 const DAILY_LIMIT_FREE = 5;
 const DAILY_LIMIT_PAID = 9999; // effectively unlimited
 const LESSON_RUN_SCHEMA_VERSION = 2;
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "";
 
 // Extraction safety limits
 const MIN_EXTRACTED_CHARS = 100;
@@ -715,6 +716,28 @@ if (runErr || !runRow?.id) {
 }
 
 const lessonRunId = runRow.id;
+
+if (isPaid) {
+  const fileUrl = APP_URL
+    ? `${APP_URL}/?lessonRunId=${encodeURIComponent(lessonRunId)}`
+    : `/?lessonRunId=${encodeURIComponent(lessonRunId)}`;
+
+  const { error: materialErr } = await supabase
+    .from("study_materials")
+    .insert({
+      user_id: userId,
+      file_name: file.name,
+      file_url: fileUrl,
+    });
+
+  if (materialErr) {
+    console.error("study_materials insert error:", materialErr.message);
+    return NextResponse.json(
+      { error: "Failed to store study material." },
+      { status: 500 }
+    );
+  }
+}
 
 
     /* ---------------------------------------------------------

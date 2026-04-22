@@ -150,6 +150,17 @@ create index if not exists lesson_runs_user_created_at_idx
 create index if not exists lesson_runs_schema_version_idx
   on public.lesson_runs (((lessons_json ->> 'schemaVersion')));
 
+create table if not exists public.study_materials (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  file_name text not null,
+  file_url text not null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists study_materials_user_created_at_idx
+  on public.study_materials (user_id, created_at desc);
+
 -- Current app expects lesson_runs.lessons_json schema v2:
 -- {
 --   "schemaVersion": 2,
@@ -265,6 +276,7 @@ for each row execute function public.set_updated_at();
 alter table public.profiles enable row level security;
 alter table public.daily_usage enable row level security;
 alter table public.lesson_runs enable row level security;
+alter table public.study_materials enable row level security;
 alter table public.concept_mastery enable row level security;
 alter table public.question_attempts enable row level security;
 alter table public.question_reports enable row level security;
@@ -309,6 +321,20 @@ on public.lesson_runs
 for update
 to authenticated
 using (auth.uid() = user_id)
+with check (auth.uid() = user_id);
+
+drop policy if exists "study_materials_select_own" on public.study_materials;
+create policy "study_materials_select_own"
+on public.study_materials
+for select
+to authenticated
+using (auth.uid() = user_id);
+
+drop policy if exists "study_materials_insert_own" on public.study_materials;
+create policy "study_materials_insert_own"
+on public.study_materials
+for insert
+to authenticated
 with check (auth.uid() = user_id);
 
 drop policy if exists "concept_mastery_select_own" on public.concept_mastery;
@@ -385,6 +411,7 @@ grant usage on schema public to anon, authenticated;
 grant select on public.profiles to authenticated;
 grant select on public.daily_usage to authenticated;
 grant select, insert, update on public.lesson_runs to authenticated;
+grant select, insert on public.study_materials to authenticated;
 grant select, insert, update on public.concept_mastery to authenticated;
 grant select, insert on public.question_attempts to authenticated;
 grant insert on public.question_reports to authenticated;
