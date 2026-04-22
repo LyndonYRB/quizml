@@ -205,7 +205,8 @@ export async function POST(request: NextRequest) {
       }
 
       const {
-        chunkRows,
+        chunkRowsWithEmbeddings,
+        chunkRowsWithoutEmbeddings,
         embeddingSuccessCount,
         embeddingFailureCount,
         embeddingMode,
@@ -216,21 +217,46 @@ export async function POST(request: NextRequest) {
         logLabel: "process-pdf",
       });
 
-      const { error: chunkErr } = await supabaseAdmin
-        .from("study_material_chunks")
-        .insert(chunkRows);
+      if (chunkRowsWithEmbeddings.length > 0) {
+        const { error: chunkErr } = await supabaseAdmin
+          .from("study_material_chunks")
+          .insert(chunkRowsWithEmbeddings);
 
-      if (chunkErr) {
-        console.error("process-pdf study_material_chunks insert error:", {
-          message: chunkErr.message,
-        });
-        return NextResponse.json(
-          { error: "Failed to store study material chunks." },
-          { status: 500 }
-        );
+        if (chunkErr) {
+          console.error("process-pdf study_material_chunks insert error:", {
+            message: chunkErr.message,
+          });
+          return NextResponse.json(
+            { error: "Failed to store study material chunks." },
+            { status: 500 }
+          );
+        }
+      }
+
+      if (chunkRowsWithoutEmbeddings.length > 0) {
+        const { error: chunkErr } = await supabaseAdmin
+          .from("study_material_chunks")
+          .insert(chunkRowsWithoutEmbeddings);
+
+        if (chunkErr) {
+          console.error("process-pdf study_material_chunks insert error:", {
+            message: chunkErr.message,
+          });
+          return NextResponse.json(
+            { error: "Failed to store study material chunks." },
+            { status: 500 }
+          );
+        }
       }
 
       savedMaterials.push(material);
+
+      console.log("process-pdf chunk rows inserted:", {
+        userId,
+        materialId: material.id,
+        withEmbeddings: chunkRowsWithEmbeddings.length,
+        withoutEmbeddings: chunkRowsWithoutEmbeddings.length,
+      });
 
       console.log("process-pdf material ingested:", {
         userId,

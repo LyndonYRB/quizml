@@ -133,7 +133,8 @@ export async function POST(request: NextRequest) {
       }
 
       const {
-        chunkRows,
+        chunkRowsWithEmbeddings,
+        chunkRowsWithoutEmbeddings,
         embeddingSuccessCount,
         embeddingFailureCount,
         embeddingMode,
@@ -144,20 +145,43 @@ export async function POST(request: NextRequest) {
         logLabel: "ingest-materials",
       });
 
-      const { error: chunkErr } = await supabaseAdmin
-        .from("study_material_chunks")
-        .insert(chunkRows);
+      if (chunkRowsWithEmbeddings.length > 0) {
+        const { error: chunkErr } = await supabaseAdmin
+          .from("study_material_chunks")
+          .insert(chunkRowsWithEmbeddings);
 
-      if (chunkErr) {
-        console.error("study_material_chunks insert error:", chunkErr.message);
-        return NextResponse.json(
-          { error: "Failed to save material chunks." },
-          { status: 500 }
-        );
+        if (chunkErr) {
+          console.error("study_material_chunks insert error:", chunkErr.message);
+          return NextResponse.json(
+            { error: "Failed to save material chunks." },
+            { status: 500 }
+          );
+        }
+      }
+
+      if (chunkRowsWithoutEmbeddings.length > 0) {
+        const { error: chunkErr } = await supabaseAdmin
+          .from("study_material_chunks")
+          .insert(chunkRowsWithoutEmbeddings);
+
+        if (chunkErr) {
+          console.error("study_material_chunks insert error:", chunkErr.message);
+          return NextResponse.json(
+            { error: "Failed to save material chunks." },
+            { status: 500 }
+          );
+        }
       }
 
       savedMaterials.push(material);
       chunkCounts[material.id] = chunks.length;
+
+      console.log("ingest-materials chunk rows inserted:", {
+        userId,
+        materialId: material.id,
+        withEmbeddings: chunkRowsWithEmbeddings.length,
+        withoutEmbeddings: chunkRowsWithoutEmbeddings.length,
+      });
 
       console.log("ingest-materials material ingested:", {
         userId,
