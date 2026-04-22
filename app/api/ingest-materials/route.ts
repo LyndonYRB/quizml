@@ -21,6 +21,12 @@ type SavedMaterial = {
   created_at: string;
 };
 
+type FileIngestError = {
+  fileName: string;
+  stage: string;
+  message: string;
+};
+
 function materialUrl(materialId: string) {
   return APP_URL
     ? `${APP_URL}/?studyMaterialId=${encodeURIComponent(materialId)}`
@@ -93,6 +99,7 @@ export async function POST(request: NextRequest) {
     const { extractText } = await import("unpdf");
     const savedMaterials: SavedMaterial[] = [];
     const chunkCounts: Record<string, number> = {};
+    const fileErrors: FileIngestError[] = [];
 
     for (const file of files) {
       let text = "";
@@ -108,10 +115,12 @@ export async function POST(request: NextRequest) {
           fileSize: file.size,
           message: error instanceof Error ? error.message : "Unknown error",
         });
-        return NextResponse.json(
-          { error: `Could not read text from ${file.name}.` },
-          { status: 400 }
-        );
+        fileErrors.push({
+          fileName: file.name,
+          stage: "text_extraction",
+          message: `Could not read text from ${file.name}.`,
+        });
+        continue;
       }
 
       console.log("ingest-materials text extracted:", {
@@ -121,10 +130,12 @@ export async function POST(request: NextRequest) {
       });
 
       if (!text || text.length < MIN_EXTRACTED_CHARS) {
-        return NextResponse.json(
-          { error: `Could not extract enough text from ${file.name}.` },
-          { status: 400 }
-        );
+        fileErrors.push({
+          fileName: file.name,
+          stage: "text_extraction",
+          message: `Could not extract enough text from ${file.name}.`,
+        });
+        continue;
       }
 
       const chunks = splitTextIntoChunks(text);
@@ -134,10 +145,12 @@ export async function POST(request: NextRequest) {
       });
 
       if (chunks.length === 0) {
-        return NextResponse.json(
-          { error: `Could not create usable chunks from ${file.name}.` },
-          { status: 400 }
-        );
+        fileErrors.push({
+          fileName: file.name,
+          stage: "chunking",
+          message: `Could not create usable chunks from ${file.name}.`,
+        });
+        continue;
       }
 
       const materialId = crypto.randomUUID();
@@ -159,10 +172,12 @@ export async function POST(request: NextRequest) {
           code: materialErr?.code,
           details: materialErr?.details,
         });
-        return NextResponse.json(
-          { error: "Failed to save study material." },
-          { status: 500 }
-        );
+        fileErrors.push({
+          fileName: file.name,
+          stage: "material_insert",
+          message: materialErr?.message || "Failed to save study material.",
+        });
+        continue;
       }
 
       console.log("ingest-materials material inserted:", {
@@ -193,10 +208,26 @@ export async function POST(request: NextRequest) {
       });
 
       if (chunkInsert.error) {
-        return NextResponse.json(
-          { error: "Failed to save material chunks." },
-          { status: 500 }
-        );
+        fileErrors.push({
+          fileName: file.name,
+          stage: "chunk_insert",
+          message: chunkInsert.error.message || "Failed to save material chunks.",
+        });
+
+        const { error: cleanupErr } = await supabaseAdmin
+          .from("study_materials")
+          .delete()
+          .eq("id", material.id);
+
+        if (cleanupErr) {
+          console.error("ingest-materials material cleanup failed:", {
+            fileName: file.name,
+            materialId: material.id,
+            message: cleanupErr.message,
+          });
+        }
+
+        continue;
       }
 
       savedMaterials.push(material);
@@ -220,10 +251,32 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    if (savedMaterials.length === 0) {
+      const firstError = fileErrors[0];
+      return NextResponse.json(
+        {
+          success: false,
+          error: firstError?.message || "Failed to ingest study materials.",
+          fileErrors,
+        },
+        { status: 400 }
+      );
+    }
+
+    if (fileErrors.length > 0) {
+      console.warn("ingest-materials partial batch success:", {
+        userId,
+        savedMaterialCount: savedMaterials.length,
+        failedFileCount: fileErrors.length,
+        fileErrors,
+      });
+    }
+
     return NextResponse.json({
       success: true,
       studyMaterials: savedMaterials,
       chunkCounts,
+      fileErrors,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
