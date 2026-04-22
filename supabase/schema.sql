@@ -2,6 +2,7 @@
 -- Run this in the Supabase SQL editor for a new project.
 
 create extension if not exists pgcrypto;
+create extension if not exists vector;
 
 -- =========================================================
 -- Profiles / billing entitlement
@@ -161,6 +162,80 @@ create table if not exists public.study_materials (
 create index if not exists study_materials_user_created_at_idx
   on public.study_materials (user_id, created_at desc);
 
+create table if not exists public.study_material_chunks (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  study_material_id uuid not null references public.study_materials(id) on delete cascade,
+  chunk_index integer not null check (chunk_index >= 0),
+  content text not null,
+  token_count integer,
+  embedding vector(1536),
+  created_at timestamptz not null default now()
+);
+
+alter table public.study_material_chunks
+  add column if not exists embedding vector(1536);
+
+create index if not exists study_material_chunks_user_id_idx
+  on public.study_material_chunks (user_id);
+
+create index if not exists study_material_chunks_material_id_idx
+  on public.study_material_chunks (study_material_id);
+
+create unique index if not exists study_material_chunks_material_chunk_idx
+  on public.study_material_chunks (study_material_id, chunk_index);
+
+create index if not exists study_material_chunks_embedding_idx
+on public.study_material_chunks
+using hnsw (embedding vector_cosine_ops);
+
+create or replace function public.match_study_material_chunks (
+  query_embedding vector(1536),
+  match_user_id uuid,
+  match_material_ids uuid[],
+  match_count int default 12
+)
+returns table (
+  id uuid,
+  study_material_id uuid,
+  chunk_index int,
+  content text,
+  token_count int,
+  similarity float
+)
+language sql stable as $$
+  select
+    c.id,
+    c.study_material_id,
+    c.chunk_index,
+    c.content,
+    c.token_count,
+    1 - (c.embedding <=> query_embedding) as similarity
+  from public.study_material_chunks c
+  where c.user_id = match_user_id
+    and c.study_material_id = any(match_material_ids)
+    and c.embedding is not null
+  order by c.embedding <=> query_embedding
+  limit match_count;
+$$;
+
+create table if not exists public.lesson_run_materials (
+  id uuid primary key default gen_random_uuid(),
+  lesson_run_id uuid not null references public.lesson_runs(id) on delete cascade,
+  study_material_id uuid not null references public.study_materials(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  unique (lesson_run_id, study_material_id)
+);
+
+create table if not exists public.lesson_run_chunks (
+  id uuid primary key default gen_random_uuid(),
+  lesson_run_id uuid not null references public.lesson_runs(id) on delete cascade,
+  study_material_chunk_id uuid not null references public.study_material_chunks(id) on delete cascade,
+  rank integer,
+  created_at timestamptz not null default now(),
+  unique (lesson_run_id, study_material_chunk_id)
+);
+
 -- Current app expects lesson_runs.lessons_json schema v2:
 -- {
 --   "schemaVersion": 2,
@@ -277,6 +352,9 @@ alter table public.profiles enable row level security;
 alter table public.daily_usage enable row level security;
 alter table public.lesson_runs enable row level security;
 alter table public.study_materials enable row level security;
+alter table public.study_material_chunks enable row level security;
+alter table public.lesson_run_materials enable row level security;
+alter table public.lesson_run_chunks enable row level security;
 alter table public.concept_mastery enable row level security;
 alter table public.question_attempts enable row level security;
 alter table public.question_reports enable row level security;
@@ -336,6 +414,96 @@ on public.study_materials
 for insert
 to authenticated
 with check (auth.uid() = user_id);
+
+drop policy if exists "study_material_chunks_select_own" on public.study_material_chunks;
+create policy "study_material_chunks_select_own"
+on public.study_material_chunks
+for select
+to authenticated
+using (auth.uid() = user_id);
+
+drop policy if exists "study_material_chunks_insert_own" on public.study_material_chunks;
+create policy "study_material_chunks_insert_own"
+on public.study_material_chunks
+for insert
+to authenticated
+with check (
+  auth.uid() = user_id
+  and exists (
+    select 1
+    from public.study_materials
+    where study_materials.id = study_material_chunks.study_material_id
+      and study_materials.user_id = auth.uid()
+  )
+);
+
+drop policy if exists "lesson_run_materials_select_own" on public.lesson_run_materials;
+create policy "lesson_run_materials_select_own"
+on public.lesson_run_materials
+for select
+to authenticated
+using (
+  exists (
+    select 1
+    from public.lesson_runs
+    where lesson_runs.id = lesson_run_materials.lesson_run_id
+      and lesson_runs.user_id = auth.uid()
+  )
+);
+
+drop policy if exists "lesson_run_materials_insert_own" on public.lesson_run_materials;
+create policy "lesson_run_materials_insert_own"
+on public.lesson_run_materials
+for insert
+to authenticated
+with check (
+  exists (
+    select 1
+    from public.lesson_runs
+    where lesson_runs.id = lesson_run_materials.lesson_run_id
+      and lesson_runs.user_id = auth.uid()
+  )
+  and exists (
+    select 1
+    from public.study_materials
+    where study_materials.id = lesson_run_materials.study_material_id
+      and study_materials.user_id = auth.uid()
+  )
+);
+
+drop policy if exists "lesson_run_chunks_select_own" on public.lesson_run_chunks;
+create policy "lesson_run_chunks_select_own"
+on public.lesson_run_chunks
+for select
+to authenticated
+using (
+  exists (
+    select 1
+    from public.lesson_runs
+    where lesson_runs.id = lesson_run_chunks.lesson_run_id
+      and lesson_runs.user_id = auth.uid()
+  )
+);
+
+drop policy if exists "lesson_run_chunks_insert_own" on public.lesson_run_chunks;
+create policy "lesson_run_chunks_insert_own"
+on public.lesson_run_chunks
+for insert
+to authenticated
+with check (
+  exists (
+    select 1
+    from public.lesson_runs
+    where lesson_runs.id = lesson_run_chunks.lesson_run_id
+      and lesson_runs.user_id = auth.uid()
+  )
+  and exists (
+    select 1
+    from public.study_material_chunks
+    where study_material_chunks.id = lesson_run_chunks.study_material_chunk_id
+      and study_material_chunks.user_id = auth.uid()
+  )
+);
 
 drop policy if exists "concept_mastery_select_own" on public.concept_mastery;
 create policy "concept_mastery_select_own"
@@ -412,11 +580,17 @@ grant select on public.profiles to authenticated;
 grant select on public.daily_usage to authenticated;
 grant select, insert, update on public.lesson_runs to authenticated;
 grant select, insert on public.study_materials to authenticated;
+grant select, insert on public.study_material_chunks to authenticated;
+grant select, insert on public.lesson_run_materials to authenticated;
+grant select, insert on public.lesson_run_chunks to authenticated;
 grant select, insert, update on public.concept_mastery to authenticated;
 grant select, insert on public.question_attempts to authenticated;
 grant insert on public.question_reports to authenticated;
 
 grant execute on function public.increment_daily_generation(uuid, date, integer)
+  to authenticated;
+
+grant execute on function public.match_study_material_chunks(vector, uuid, uuid[], int)
   to authenticated;
 
 -- No Supabase Storage buckets are required by the current app.

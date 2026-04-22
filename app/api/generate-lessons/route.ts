@@ -1,11 +1,5 @@
-// app/api/process-pdf/route.ts
-// Temporary compatibility endpoint.
-// It accepts the legacy PDF FormData shape, but generation still happens only
-// from stored study_material_chunks selected through retrieval.
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
-import { splitTextIntoChunks } from "@/lib/chunking";
-import { embedText } from "@/lib/embeddings";
 import {
   generateValidatedLessonSet,
   LESSON_RUN_SCHEMA_VERSION,
@@ -20,13 +14,8 @@ import { RAG_CONFIG } from "@/lib/rag-config";
 import { createRouteClient } from "@/lib/supabase/server";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-const MAX_PDF_BYTES_FREE = 10 * 1024 * 1024;
-const MAX_PDF_BYTES_PAID = 50 * 1024 * 1024;
 const DAILY_LIMIT_FREE = 5;
 const DAILY_LIMIT_PAID = 9999;
-const MIN_EXTRACTED_CHARS = 100;
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "";
 
 type MaterialRow = {
   id: string;
@@ -57,19 +46,21 @@ function sanitizeFocusTopic(input: unknown): string {
     .trim();
 }
 
-function materialUrl(materialId: string) {
-  return APP_URL
-    ? `${APP_URL}/?studyMaterialId=${encodeURIComponent(materialId)}`
-    : `/?studyMaterialId=${encodeURIComponent(materialId)}`;
+function sanitizeMaterialIds(value: unknown) {
+  if (!Array.isArray(value)) return [];
+
+  return Array.from(
+    new Set(
+      value.filter(
+        (item): item is string => typeof item === "string" && item.trim().length > 0
+      )
+    )
+  ).slice(0, 25);
 }
 
 function lessonRunFileName(materials: MaterialRow[]) {
   if (materials.length === 1) return materials[0].file_name;
   return `${materials.length} materials`;
-}
-
-function totalFileSize(files: File[]) {
-  return files.reduce((total, file) => total + file.size, 0);
 }
 
 export async function POST(request: NextRequest) {
@@ -84,23 +75,14 @@ export async function POST(request: NextRequest) {
     }
 
     const userId = userData.user.id;
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("is_paid, plan")
-      .eq("user_id", userId)
-      .maybeSingle();
+    const body = (await request.json().catch(() => null)) as {
+      focusTopic?: unknown;
+      studyMaterialIds?: unknown;
+      maxChunks?: unknown;
+    } | null;
 
-    const isPaid = !!profile?.is_paid;
-
-    console.log("process-pdf profile loaded:", {
-      userId,
-      isPaid,
-      plan: profile?.plan ?? null,
-    });
-
-    const formData = await request.formData();
-    const uploadedFiles = formData.getAll("files");
-    const focusTopic = sanitizeFocusTopic(formData.get("focusTopic"));
+    const focusTopic = sanitizeFocusTopic(body?.focusTopic);
+    const studyMaterialIds = sanitizeMaterialIds(body?.studyMaterialIds);
 
     if (!focusTopic) {
       return NextResponse.json(
@@ -109,179 +91,91 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (uploadedFiles.length === 0) {
-      return NextResponse.json({ error: "No file provided" }, { status: 400 });
-    }
-
-    if (!isPaid && uploadedFiles.length !== 1) {
+    if (studyMaterialIds.length === 0) {
       return NextResponse.json(
-        { error: "Free plan supports one PDF at a time." },
+        { error: "Select at least one study material." },
         { status: 400 }
       );
     }
 
-    if (uploadedFiles.some((file) => !(file instanceof File))) {
-      return NextResponse.json({ error: "Invalid file upload." }, { status: 400 });
-    }
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("is_paid")
+      .eq("user_id", userId)
+      .maybeSingle();
 
-    const files = uploadedFiles as File[];
-    const maxSize = isPaid ? MAX_PDF_BYTES_PAID : MAX_PDF_BYTES_FREE;
+    const isPaid = !!profile?.is_paid;
 
-    const oversizedFile = files.find((file) => file.size > maxSize);
-    if (oversizedFile) {
+    if (!isPaid && studyMaterialIds.length !== 1) {
       return NextResponse.json(
-        {
-          error: `${oversizedFile.name} is too large (max ${
-            maxSize / 1024 / 1024
-          }MB).`,
-        },
-        { status: 413 }
+        { error: "Free plan supports one study material at a time." },
+        { status: 400 }
       );
     }
 
-    const nonPdfFile = files.find(
-      (file) => file.type && file.type !== "application/pdf"
+    const { data: materials, error: materialErr } = await supabase
+      .from("study_materials")
+      .select("id, file_name")
+      .eq("user_id", userId)
+      .in("id", studyMaterialIds)
+      .returns<MaterialRow[]>();
+
+    if (materialErr) {
+      console.error("generate materials read error:", materialErr.message);
+      return NextResponse.json(
+        { error: "Failed to load study materials." },
+        { status: 500 }
+      );
+    }
+
+    if ((materials ?? []).length !== studyMaterialIds.length) {
+      return NextResponse.json(
+        { error: "One or more selected materials were not found." },
+        { status: 404 }
+      );
+    }
+
+    const materialNameById = new Map(
+      (materials ?? []).map((material) => [material.id, material.file_name])
     );
-    if (nonPdfFile) {
-      return NextResponse.json(
-        { error: "Only PDF files are supported." },
-        { status: 415 }
-      );
-    }
 
-    console.log("process-pdf file validated:", {
-      fileNames: files.map((file) => file.name),
-      totalFileSize: totalFileSize(files),
-    });
-
-    const { extractText } = await import("unpdf");
-    const savedMaterials: MaterialRow[] = [];
-
-    for (const file of files) {
-      const bytes = await file.arrayBuffer();
-      const { text } = await extractText(new Uint8Array(bytes), {
-        mergePages: true,
-      });
-
-      if (!text || text.length < MIN_EXTRACTED_CHARS) {
-        return NextResponse.json(
-          { error: `Could not extract enough text from ${file.name}.` },
-          { status: 400 }
-        );
-      }
-
-      const chunks = splitTextIntoChunks(text);
-      if (chunks.length === 0) {
-        return NextResponse.json(
-          { error: `Could not create usable chunks from ${file.name}.` },
-          { status: 400 }
-        );
-      }
-
-      const materialId = crypto.randomUUID();
-      const { data: material, error: materialErr } = await supabase
-        .from("study_materials")
-        .insert({
-          id: materialId,
-          user_id: userId,
-          file_name: file.name,
-          file_url: materialUrl(materialId),
-        })
-        .select("id, file_name")
-        .single();
-
-      if (materialErr || !material) {
-        console.error("process-pdf study_materials insert failed:", {
-          message: materialErr?.message,
-        });
-        return NextResponse.json(
-          { error: "Failed to store study material." },
-          { status: 500 }
-        );
-      }
-
-      const chunkRows = await Promise.all(
-        chunks.map(async (chunk) => {
-          const embedding = await embedText(chunk.content).catch((error) => {
-            console.error(
-              "Chunk embedding failed:",
-              error instanceof Error ? error.message : "Unknown error"
-            );
-            return null;
-          });
-
-          return {
-            user_id: userId,
-            study_material_id: material.id,
-            chunk_index: chunk.chunkIndex,
-            content: chunk.content,
-            token_count: chunk.tokenCount,
-            embedding,
-          };
-        })
-      );
-
-      const { error: chunkErr } = await supabase
-        .from("study_material_chunks")
-        .insert(chunkRows);
-
-      if (chunkErr) {
-        console.error("process-pdf study_material_chunks insert error:", {
-          message: chunkErr.message,
-        });
-        return NextResponse.json(
-          { error: "Failed to store study material chunks." },
-          { status: 500 }
-        );
-      }
-
-      savedMaterials.push(material);
-
-      console.log("process-pdf material ingested:", {
-        userId,
-        materialId: material.id,
-        fileName: file.name,
-        chunkCount: chunks.length,
-        embeddingSuccessCount: chunkRows.filter((row) => row.embedding).length,
-        embeddingFailureCount: chunkRows.filter((row) => !row.embedding).length,
-      });
-    }
-
-    const materialIds = savedMaterials.map((material) => material.id);
-
-    const { data: chunks, error: chunkReadErr } = await supabase
+    const { data: chunks, error: chunkErr } = await supabase
       .from("study_material_chunks")
       .select("id, study_material_id, chunk_index, content, token_count")
       .eq("user_id", userId)
-      .in("study_material_id", materialIds)
+      .in("study_material_id", studyMaterialIds)
       .order("study_material_id", { ascending: true })
       .order("chunk_index", { ascending: true })
       .returns<ChunkRow[]>();
 
-    if (chunkReadErr) {
-      console.error("process-pdf chunk retrieval error:", chunkReadErr.message);
+    if (chunkErr) {
+      console.error("generate chunks read error:", chunkErr.message);
       return NextResponse.json(
-        { error: "Failed to retrieve material chunks." },
+        { error: "Failed to load material chunks." },
         { status: 500 }
       );
     }
 
     if (!chunks?.length) {
       return NextResponse.json(
-        { error: "Stored materials have no indexed text chunks." },
+        { error: "Selected materials have no indexed text chunks." },
         { status: 409 }
       );
     }
 
-    const materialNameById = new Map(
-      savedMaterials.map((material) => [material.id, material.file_name])
-    );
+    const candidateChunkCount =
+      typeof body?.maxChunks === "number" &&
+      Number.isInteger(body.maxChunks) &&
+      body.maxChunks > 0
+        ? Math.min(body.maxChunks, RAG_CONFIG.maxCandidateChunkCount)
+        : RAG_CONFIG.candidateChunkCount;
+
     let selectedChunks = await selectRelevantChunksVector({
       supabase,
       userId,
-      materialIds,
+      materialIds: studyMaterialIds,
       focusTopic,
-      maxChunks: RAG_CONFIG.candidateChunkCount,
+      maxChunks: candidateChunkCount,
     });
 
     if (!selectedChunks || selectedChunks.length === 0) {
@@ -295,10 +189,7 @@ export async function POST(request: NextRequest) {
           content: chunk.content,
           tokenCount: chunk.token_count,
         })),
-        {
-          maxChunks: RAG_CONFIG.candidateChunkCount,
-          maxTokens: RAG_CONFIG.keywordFallbackTokenBudget,
-        }
+        { maxChunks: candidateChunkCount, maxTokens: RAG_CONFIG.keywordFallbackTokenBudget }
       );
     } else {
       selectedChunks = selectedChunks.map((chunk) => ({
@@ -314,7 +205,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    console.log("process-pdf retrieval candidates:", {
+    console.log("generate-lessons retrieval candidates:", {
       count: selectedChunks.length,
     });
 
@@ -326,7 +217,7 @@ export async function POST(request: NextRequest) {
     });
     selectedChunks = reranked.chunks;
 
-    console.log("process-pdf rerank result:", {
+    console.log("generate-lessons rerank result:", {
       count: selectedChunks.length,
       fallback: reranked.usedFallback,
     });
@@ -380,9 +271,9 @@ export async function POST(request: NextRequest) {
       materialContext
     );
 
-    console.log("process-pdf generation succeeded:", {
+    console.log("generate-lessons generation succeeded:", {
       userId,
-      materialCount: materialIds.length,
+      materialCount: studyMaterialIds.length,
       selectedChunkCount: selectedChunks.length,
     });
 
@@ -392,8 +283,8 @@ export async function POST(request: NextRequest) {
       .from("lesson_runs")
       .insert({
         user_id: userId,
-        file_name: lessonRunFileName(savedMaterials),
-        file_size: totalFileSize(files),
+        file_name: lessonRunFileName(materials ?? []),
+        file_size: 0,
         focus_topic: focusTopic,
         lessons_json: {
           schemaVersion: LESSON_RUN_SCHEMA_VERSION,
@@ -413,29 +304,16 @@ export async function POST(request: NextRequest) {
     }
 
     const lessonRunId = runRow.id;
-    const fileUrl = APP_URL
-      ? `${APP_URL}/?lessonRunId=${encodeURIComponent(lessonRunId)}`
-      : `/?lessonRunId=${encodeURIComponent(lessonRunId)}`;
 
-    console.log("process-pdf study_materials insert starting:", {
-      userId,
-      isPaid,
-      fileNames: files.map((file) => file.name),
-      lessonRunId,
-      fileUrl,
-    });
+    const { error: linkErr } = await supabase.from("lesson_run_materials").insert(
+      studyMaterialIds.map((studyMaterialId) => ({
+        lesson_run_id: lessonRunId,
+        study_material_id: studyMaterialId,
+      }))
+    );
 
-    const { error: materialLinkErr } = await supabase
-      .from("lesson_run_materials")
-      .insert(
-        materialIds.map((studyMaterialId) => ({
-          lesson_run_id: lessonRunId,
-          study_material_id: studyMaterialId,
-        }))
-      );
-
-    if (materialLinkErr) {
-      console.error("lesson_run_materials insert error:", materialLinkErr.message);
+    if (linkErr) {
+      console.error("lesson_run_materials insert error:", linkErr.message);
       return NextResponse.json(
         { error: "Failed to link lesson run materials." },
         { status: 500 }
@@ -458,15 +336,12 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    console.log("process-pdf study_materials insert succeeded");
-
     return NextResponse.json({
       success: true,
       lessonRunId,
       lessons: generated.lessons,
       finalTest: generated.finalTest,
       selectedChunkCount: selectedChunks.length,
-      studyMaterialIds: materialIds,
       usage: {
         limit: isPaid ? DAILY_LIMIT_PAID : DAILY_LIMIT_FREE,
         used: generations,
@@ -479,9 +354,9 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
-    console.error("Error processing PDF:", message);
+    console.error("generate-lessons route error:", message);
     return NextResponse.json(
-      { error: "Failed to process PDF: " + message },
+      { error: "Failed to generate lessons: " + message },
       { status: 500 }
     );
   }

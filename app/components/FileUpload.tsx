@@ -88,6 +88,13 @@ interface StudyMaterialsResponse {
   error?: string;
 }
 
+interface IngestMaterialsResponse {
+  success?: boolean;
+  studyMaterials?: StudyMaterial[];
+  chunkCounts?: Record<string, number>;
+  error?: string;
+}
+
 
 /* =========================================================
    CONSTANTS
@@ -216,6 +223,31 @@ function formatMaterialDate(value: string) {
   }).format(date);
 }
 
+function filesDisplayName(files: File[]) {
+  if (files.length === 1) return files[0].name;
+  return `${files.length} files`;
+}
+
+function materialsSignature(materialIds: string[]) {
+  return [...materialIds].sort().join("|");
+}
+
+function materialsDisplayName(materials: StudyMaterial[]) {
+  if (materials.length === 1) return materials[0].file_name;
+  return `${materials.length} materials`;
+}
+
+function selectedMaterialsSummary(count: number, isPaid: boolean) {
+  if (count === 0) {
+    return isPaid
+      ? "Select saved materials or upload PDFs to start."
+      : "Select one saved material or upload one PDF to start.";
+  }
+
+  if (count === 1) return "1 material selected";
+  return `${count} materials selected`;
+}
+
 /* =========================================================
    COMPONENT
 ========================================================= */
@@ -233,7 +265,7 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
      STATE: File + UI flow
   --------------------------------------------------------- */
 
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
   const [showFocusForm, setShowFocusForm] = useState(false);
   const [lessons, setLessons] = useState<Lesson[]>([]);
   const [finalTest, setFinalTest] = useState<QuizQuestion[]>([]);
@@ -272,6 +304,7 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
   const [reviewLoading, setReviewLoading] = useState(false);
   const [showReviewScreen, setShowReviewScreen] = useState(false);
   const [studyMaterials, setStudyMaterials] = useState<StudyMaterial[]>([]);
+  const [selectedStudyMaterialIds, setSelectedStudyMaterialIds] = useState<string[]>([]);
 
   const maxFileBytes = isPaid ? MAX_FILE_BYTES_PAID : MAX_FILE_BYTES_FREE;
   const maxFileMb = maxFileBytes / 1024 / 1024;
@@ -292,6 +325,7 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
       setCurrentPeriodEnd(null);
       setCancelAtPeriodEnd(false);
       setStudyMaterials([]);
+      setSelectedStudyMaterialIds([]);
       return;
     }
 
@@ -344,6 +378,11 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
 
           if (!cancelled && res.ok && Array.isArray(data.studyMaterials)) {
             setStudyMaterials(data.studyMaterials);
+            setSelectedStudyMaterialIds((currentIds) =>
+              currentIds.filter((id) =>
+                data.studyMaterials?.some((material) => material.id === id)
+              )
+            );
           }
         } catch {
           // Silent fail: upload/generation still works without the list.
@@ -418,15 +457,22 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
   ========================================================= */
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const selected = e.target.files?.[0];
-    if (!selected) return;
+    const selectedFiles = Array.from(e.target.files ?? []);
+    if (selectedFiles.length === 0) return;
 
-    if (selected.size > maxFileBytes) {
-      alert(`File size exceeds the ${maxFileMb}MB limit for your plan.`);
+    const nextFiles = isPaid ? selectedFiles : selectedFiles.slice(0, 1);
+
+    if (!isPaid && selectedFiles.length > 1) {
+      alert("Free plan supports one PDF at a time. Only the first file was selected.");
+    }
+
+    const oversizedFile = nextFiles.find((selected) => selected.size > maxFileBytes);
+    if (oversizedFile) {
+      alert(`${oversizedFile.name} exceeds the ${maxFileMb}MB limit for your plan.`);
       return;
     }
 
-    setFile(selected);
+    setFiles(nextFiles);
     setLessons([]);
     setFinalTest([]);
     setLessonRunId(null);
@@ -437,12 +483,12 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
   }
 
   function handleUploadClick() {
-    if (!file) return;
+    if (files.length === 0 && selectedStudyMaterialIds.length === 0) return;
     setShowFocusForm(true);
   }
 
   function clearFile() {
-    setFile(null);
+    setFiles([]);
     setLessons([]);
     setFinalTest([]);
     setLessonRunId(null);
@@ -450,6 +496,39 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
     setInitialProgress(null);
     clearActiveLessonRunReference(userId);
     setShowFocusForm(false);
+  }
+
+  function removeFile(indexToRemove: number) {
+    setFiles((currentFiles) =>
+      currentFiles.filter((_, index) => index !== indexToRemove)
+    );
+  }
+
+  function toggleStudyMaterial(materialId: string) {
+    setSelectedStudyMaterialIds((currentIds) => {
+      if (currentIds.includes(materialId)) {
+        return currentIds.filter((id) => id !== materialId);
+      }
+
+      if (!isPaid) {
+        return [materialId];
+      }
+
+      return [...currentIds, materialId];
+    });
+  }
+
+  async function refreshStudyMaterials() {
+    const materialsRes = await fetch("/api/study-materials", { method: "GET" });
+    const materialsData = (await materialsRes
+      .json()
+      .catch(() => ({}))) as StudyMaterialsResponse;
+
+    if (materialsRes.ok && Array.isArray(materialsData.studyMaterials)) {
+      setStudyMaterials(materialsData.studyMaterials);
+    }
+
+    return materialsData.studyMaterials ?? [];
   }
 
   function handleStartReview() {
@@ -534,14 +613,69 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
   ========================================================= */
 
   async function handleGenerateLessons(focusTopic: string) {
-    if (!file) return;
+    if (files.length === 0 && selectedStudyMaterialIds.length === 0) return;
 
     /* ---------------------------------------------------------
        1) Cache lookup (skip API if cached & fresh)
     --------------------------------------------------------- */
 
+    let generationMaterialIds = selectedStudyMaterialIds;
+    let currentStudyMaterials = studyMaterials;
+
+    if (files.length > 0) {
+      setUploading(true);
+      setLoadingMsg("Ingesting PDF...");
+
+      const ingestFormData = new FormData();
+      files.forEach((selectedFile) => {
+        ingestFormData.append("files", selectedFile);
+      });
+
+      const ingestResponse = await fetch("/api/ingest-materials", {
+        method: "POST",
+        body: ingestFormData,
+      });
+      const ingestData = (await ingestResponse
+        .json()
+        .catch(() => ({}))) as IngestMaterialsResponse;
+
+      if (!ingestResponse.ok || !ingestData.success) {
+        setUploading(false);
+        setLoadingMsg("");
+        alert(ingestData.error || "Failed to ingest study material.");
+        return;
+      }
+
+      const ingestedIds =
+        ingestData.studyMaterials?.map((material) => material.id) ?? [];
+      const refreshedMaterials = await refreshStudyMaterials();
+      currentStudyMaterials = refreshedMaterials;
+
+      generationMaterialIds = isPaid
+        ? Array.from(new Set([...selectedStudyMaterialIds, ...ingestedIds]))
+        : ingestedIds.slice(0, 1);
+
+      if (generationMaterialIds.length === 0 && refreshedMaterials[0]?.id) {
+        generationMaterialIds = [refreshedMaterials[0].id];
+      }
+
+      setSelectedStudyMaterialIds(generationMaterialIds);
+      setFiles([]);
+    }
+
+    if (generationMaterialIds.length === 0) return;
+
+    if (!isPaid && generationMaterialIds.length !== 1) {
+      alert("Free plan supports one study material at a time.");
+      return;
+    }
+
+    const selectedMaterials = currentStudyMaterials.filter((material) =>
+      generationMaterialIds.includes(material.id)
+    );
+    const selectedMaterialsSignature = materialsSignature(generationMaterialIds);
     const cacheKey = userId
-      ? `relrn_${userId}_${file.name}_${file.size}_${focusTopic}`
+      ? `relrn_materials_${userId}_${selectedMaterialsSignature}_${focusTopic}`
       : null;
 
     if (isAuthed && userId && cacheKey) {
@@ -580,7 +714,7 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
     --------------------------------------------------------- */
 
     setUploading(true);
-    setLoadingMsg("Uploading PDF...");
+    setLoadingMsg("Retrieving study material...");
 
     // Rotating status messages while the request runs.
     const messages = [
@@ -601,13 +735,13 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
          3) Call API
       --------------------------------------------------------- */
 
-      const formData = new FormData();
-      formData.append("file", file);
-      formData.append("focusTopic", focusTopic);
-
-      const response = await fetch("/api/process-pdf", {
+      const response = await fetch("/api/generate-lessons", {
         method: "POST",
-        body: formData,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          focusTopic,
+          studyMaterialIds: generationMaterialIds,
+        }),
       });
 
       const data = await response.json().catch(() => ({}));
@@ -648,23 +782,16 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
         setUsageLimit(data.usage.limit);
       }
 
-      if (isAuthed && isPaid) {
-        const materialsRes = await fetch("/api/study-materials", { method: "GET" });
-        const materialsData = (await materialsRes
-          .json()
-          .catch(() => ({}))) as StudyMaterialsResponse;
-
-        if (materialsRes.ok && Array.isArray(materialsData.studyMaterials)) {
-          setStudyMaterials(materialsData.studyMaterials);
-        }
+      if (isAuthed) {
+        await refreshStudyMaterials();
       }
 
 
       // Cache results
       const cacheData: CachedLesson = {
         schemaVersion: CACHE_SCHEMA_VERSION,
-        fileName: file.name,
-        fileSize: file.size,
+        fileName: materialsDisplayName(selectedMaterials),
+        fileSize: 0,
         focusTopic,
         lessonRunId: data.lessonRunId ?? null,
         lessons: data.lessons,
@@ -695,10 +822,18 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
      RENDER: Focus form step
   ========================================================= */
 
-  if (showFocusForm && file) {
+  if (showFocusForm && (files.length > 0 || selectedStudyMaterialIds.length > 0)) {
+    const selectedMaterials = studyMaterials.filter((material) =>
+      selectedStudyMaterialIds.includes(material.id)
+    );
+
     return (
       <LessonFocusForm
-  fileName={file.name}
+  fileName={
+    files.length > 0
+      ? filesDisplayName(files)
+      : materialsDisplayName(selectedMaterials)
+  }
   onGenerate={handleGenerateLessons}
   onCancel={() => setShowFocusForm(false)}
   generationsLeft={generationsLeft}
@@ -916,21 +1051,54 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
 
       {studyMaterials.length > 0 && (
         <div className="mb-4 rounded-lg border border-white/10 bg-gray-700 p-4">
-          <h3 className="text-sm font-semibold text-white">Your study materials</h3>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold text-white">Your study materials</h3>
+              <p className="mt-1 text-xs text-gray-400">
+                {isPaid
+                  ? "Select one or more saved materials for the next lesson run."
+                  : "Free plan can generate from one saved material at a time."}
+              </p>
+            </div>
+            {selectedStudyMaterialIds.length > 0 && (
+              <button
+                onClick={() => setSelectedStudyMaterialIds([])}
+                className="shrink-0 text-sm text-red-400 hover:text-red-300 transition"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+          <p className="mt-3 rounded bg-gray-800 px-3 py-2 text-xs font-medium text-blue-200">
+            {selectedMaterialsSummary(selectedStudyMaterialIds.length, isPaid)}
+          </p>
           <ul className="mt-3 space-y-2">
             {studyMaterials.map((material) => (
               <li
                 key={material.id}
-                className="flex items-center justify-between gap-3 rounded bg-gray-800 px-3 py-2"
+                className={`flex items-center justify-between gap-3 rounded border px-3 py-2 transition ${
+                  selectedStudyMaterialIds.includes(material.id)
+                    ? "border-blue-400 bg-blue-500/15"
+                    : "border-transparent bg-gray-800"
+                }`}
               >
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium text-gray-100">
-                    {material.file_name}
-                  </p>
-                  <p className="text-xs text-gray-400">
-                    {formatMaterialDate(material.created_at)}
-                  </p>
-                </div>
+                <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-3">
+                  <input
+                    type={isPaid ? "checkbox" : "radio"}
+                    name="study-material"
+                    checked={selectedStudyMaterialIds.includes(material.id)}
+                    onChange={() => toggleStudyMaterial(material.id)}
+                    className="h-4 w-4 accent-blue-500"
+                  />
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-medium text-gray-100">
+                      {material.file_name}
+                    </span>
+                    <span className="block text-xs text-gray-400">
+                      {formatMaterialDate(material.created_at)}
+                    </span>
+                  </span>
+                </label>
                 <a
                   href={material.file_url}
                   className="shrink-0 text-sm font-semibold text-blue-400 hover:text-blue-300"
@@ -961,6 +1129,7 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
         <input
           type="file"
           accept=".pdf"
+          multiple={isPaid}
           onChange={handleFileChange}
           className="block w-full text-sm text-gray-300
             file:mr-4 file:py-2 file:px-4
@@ -971,31 +1140,63 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
       </div>
 
       {/* Selected file card */}
-      {file && (
+      {files.length > 0 && (
         <div className="mb-6 p-4 bg-gray-700 rounded-lg">
-          <p className="text-sm text-gray-300">
-            <strong>Selected:</strong> {file.name}
-          </p>
-          <p className="text-sm text-gray-400">
-            Size: {(file.size / 1024 / 1024).toFixed(2)} MB
-          </p>
-          <button
-            onClick={clearFile}
-            className="mt-2 text-sm text-red-400 hover:text-red-300 transition"
-          >
-            Remove file
-          </button>
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm font-semibold text-gray-200">
+              Selected {files.length === 1 ? "file" : "files"}
+            </p>
+            <button
+              onClick={clearFile}
+              className="text-sm text-red-400 hover:text-red-300 transition"
+            >
+              Remove all
+            </button>
+          </div>
+
+          <ul className="mt-3 space-y-2">
+            {files.map((selectedFile, index) => (
+              <li
+                key={`${selectedFile.name}-${selectedFile.size}-${index}`}
+                className="flex items-center justify-between gap-3 rounded bg-gray-800 px-3 py-2"
+              >
+                <div className="min-w-0">
+                  <p className="truncate text-sm text-gray-200">
+                    {selectedFile.name}
+                  </p>
+                  <p className="text-xs text-gray-400">
+                    {(selectedFile.size / 1024 / 1024).toFixed(2)} MB
+                  </p>
+                </div>
+                <button
+                  onClick={() => removeFile(index)}
+                  className="shrink-0 text-sm text-red-400 hover:text-red-300 transition"
+                >
+                  Remove
+                </button>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
       {/* Continue button */}
       <button
         onClick={handleUploadClick}
-        disabled={!file || uploading}
+        disabled={
+          (files.length === 0 && selectedStudyMaterialIds.length === 0) ||
+          uploading
+        }
         className="w-full bg-blue-500 hover:bg-blue-600 disabled:bg-gray-600 
           disabled:cursor-not-allowed px-6 py-3 rounded-lg font-semibold transition"
       >
-        {uploading ? "Processing..." : "Continue"}
+        {uploading
+          ? "Processing..."
+          : files.length > 0
+            ? "Ingest and Continue"
+            : selectedStudyMaterialIds.length > 0
+              ? "Generate from Selected Materials"
+              : "Continue"}
       </button>
 
       {/* Loading status box (shows during long generation call) */}
