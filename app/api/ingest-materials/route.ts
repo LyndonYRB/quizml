@@ -27,6 +27,29 @@ type FileIngestError = {
   message: string;
 };
 
+async function cleanupMaterial({
+  supabaseAdmin,
+  materialId,
+  fileName,
+}: {
+  supabaseAdmin: ReturnType<typeof createServiceRoleClient>;
+  materialId: string;
+  fileName: string;
+}) {
+  const { error } = await supabaseAdmin
+    .from("study_materials")
+    .delete()
+    .eq("id", materialId);
+
+  if (error) {
+    console.error("ingest-materials material cleanup failed:", {
+      fileName,
+      materialId,
+      message: error.message,
+    });
+  }
+}
+
 function materialUrl(materialId: string) {
   return APP_URL
     ? `${APP_URL}/?studyMaterialId=${encodeURIComponent(materialId)}`
@@ -120,6 +143,10 @@ export async function POST(request: NextRequest) {
           stage: "text_extraction",
           message: `Could not read text from ${file.name}.`,
         });
+        console.warn("ingest-materials file failed:", {
+          fileName: file.name,
+          stage: "text_extraction",
+        });
         continue;
       }
 
@@ -135,6 +162,11 @@ export async function POST(request: NextRequest) {
           stage: "text_extraction",
           message: `Could not extract enough text from ${file.name}.`,
         });
+        console.warn("ingest-materials file failed:", {
+          fileName: file.name,
+          stage: "text_extraction",
+          extractedTextLength: text.length,
+        });
         continue;
       }
 
@@ -149,6 +181,11 @@ export async function POST(request: NextRequest) {
           fileName: file.name,
           stage: "chunking",
           message: `Could not create usable chunks from ${file.name}.`,
+        });
+        console.warn("ingest-materials file failed:", {
+          fileName: file.name,
+          stage: "chunking",
+          chunkCount: chunks.length,
         });
         continue;
       }
@@ -176,6 +213,10 @@ export async function POST(request: NextRequest) {
           fileName: file.name,
           stage: "material_insert",
           message: materialErr?.message || "Failed to save study material.",
+        });
+        console.warn("ingest-materials file failed:", {
+          fileName: file.name,
+          stage: "material_insert",
         });
         continue;
       }
@@ -214,19 +255,44 @@ export async function POST(request: NextRequest) {
           message: chunkInsert.error.message || "Failed to save material chunks.",
         });
 
-        const { error: cleanupErr } = await supabaseAdmin
-          .from("study_materials")
-          .delete()
-          .eq("id", material.id);
+        console.warn("ingest-materials file failed:", {
+          fileName: file.name,
+          materialId: material.id,
+          stage: "chunk_insert",
+        });
+        await cleanupMaterial({ supabaseAdmin, materialId: material.id, fileName: file.name });
+        continue;
+      }
 
-        if (cleanupErr) {
-          console.error("ingest-materials material cleanup failed:", {
-            fileName: file.name,
-            materialId: material.id,
-            message: cleanupErr.message,
-          });
-        }
+      const { count: persistedChunkCount, error: verifyErr } = await supabaseAdmin
+        .from("study_material_chunks")
+        .select("id", { count: "exact", head: true })
+        .eq("user_id", userId)
+        .eq("study_material_id", material.id);
 
+      if (verifyErr || persistedChunkCount !== chunks.length) {
+        console.error("ingest-materials chunk verification failed:", {
+          fileName: file.name,
+          materialId: material.id,
+          expectedChunkCount: chunks.length,
+          persistedChunkCount,
+          message: verifyErr?.message,
+          code: verifyErr?.code,
+          details: verifyErr?.details,
+        });
+        fileErrors.push({
+          fileName: file.name,
+          stage: "chunk_verify",
+          message:
+            verifyErr?.message ||
+            `Expected ${chunks.length} chunks but found ${persistedChunkCount ?? 0}.`,
+        });
+        console.warn("ingest-materials file failed:", {
+          fileName: file.name,
+          materialId: material.id,
+          stage: "chunk_verify",
+        });
+        await cleanupMaterial({ supabaseAdmin, materialId: material.id, fileName: file.name });
         continue;
       }
 
@@ -238,6 +304,8 @@ export async function POST(request: NextRequest) {
         materialId: material.id,
         withEmbeddings: chunkInsert.insertedWithEmbeddings,
         withoutEmbeddings: chunkInsert.insertedWithoutEmbeddings,
+        usedVectorFallback: chunkInsert.usedVectorFallback,
+        persistedChunkCount,
       });
 
       console.log("ingest-materials material ingested:", {
@@ -248,6 +316,7 @@ export async function POST(request: NextRequest) {
         embeddingSuccessCount,
         embeddingFailureCount,
         embeddingMode,
+        status: "success",
       });
     }
 

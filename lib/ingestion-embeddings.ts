@@ -129,6 +129,7 @@ export async function insertChunkRowsWithVectorFallback({
 }) {
   let insertedWithEmbeddings = 0;
   let insertedWithoutEmbeddings = 0;
+  let usedVectorFallback = false;
   const fallbackRows = [...withoutEmbeddings];
 
   if (withEmbeddings.length > 0) {
@@ -144,6 +145,7 @@ export async function insertChunkRowsWithVectorFallback({
         message: error.message,
         details: error.details,
       });
+      usedVectorFallback = true;
       fallbackRows.push(...withEmbeddings.map(stripEmbedding));
     } else {
       insertedWithEmbeddings = withEmbeddings.length;
@@ -173,5 +175,6 @@ export async function insertChunkRowsWithVectorFallback({
     error: null,
     insertedWithEmbeddings,
     insertedWithoutEmbeddings,
+    usedVectorFallback,
   };
 }
