@@ -1123,9 +1123,9 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
   ========================================================= */
 
   return (
-    <div className="max-w-2xl mx-auto p-8 bg-gray-800 rounded-lg shadow-xl">
+    <div className="max-w-2xl mx-auto p-8 bg-gray-800 rounded-lg shadow-xl text-white">
       <StepIndicator currentStep="upload" />
-      <h2 className="text-2xl font-bold mb-6">Upload Study Material</h2>
+      <h2 className="text-2xl font-bold mb-6 text-white">Upload Study Material</h2>
 
       {/* Daily usage banner */}
       <div className="mb-4 p-3 bg-gray-700 rounded">
@@ -1145,7 +1145,7 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
           <button
             onClick={handleResumeLesson}
             disabled={uploading}
-            className="bg-blue-500 hover:bg-blue-600 disabled:bg-gray-600 disabled:cursor-not-allowed px-4 py-2 rounded-lg font-semibold text-sm transition"
+            className="bg-blue-500 hover:bg-blue-600 disabled:bg-gray-600 disabled:text-white/60 disabled:cursor-not-allowed px-4 py-2 rounded-lg font-semibold text-sm transition"
           >
             Resume Lesson
           </button>
@@ -1162,7 +1162,7 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
           <button
             onClick={handleStartReview}
             disabled={reviewLoading || reviewDue.length === 0}
-            className="bg-purple-500 hover:bg-purple-600 disabled:bg-gray-600 disabled:cursor-not-allowed px-4 py-2 rounded-lg font-semibold text-sm transition"
+            className="bg-purple-500 hover:bg-purple-600 disabled:bg-gray-600 disabled:text-white/60 disabled:cursor-not-allowed px-4 py-2 rounded-lg font-semibold text-sm transition"
           >
             Start Review
           </button>
@@ -1342,7 +1342,7 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
           uploading
         }
         className="w-full bg-blue-500 hover:bg-blue-600 disabled:bg-gray-600 
-          disabled:cursor-not-allowed px-6 py-3 rounded-lg font-semibold transition"
+          disabled:text-white/60 disabled:cursor-not-allowed px-6 py-3 rounded-lg font-semibold transition"
       >
         {uploading
           ? "Processing..."
