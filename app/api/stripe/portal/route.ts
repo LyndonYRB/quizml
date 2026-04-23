@@ -4,17 +4,28 @@ import { createRouteClient } from "@/lib/supabase/server";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "");
 
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
-
 type ProfileRow = {
   stripe_customer_id?: string | null;
   is_paid?: boolean | null;
 };
 
+function getAppUrl() {
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL;
+
+  if (appUrl) return appUrl;
+  if (process.env.NODE_ENV !== "production") return "http://localhost:3000";
+
+  throw new Error(
+    "Missing NEXT_PUBLIC_APP_URL in production. Stripe billing portal requires an absolute app URL."
+  );
+}
+
 export async function POST(req: NextRequest) {
   const res = NextResponse.next();
 
   try {
+    const appUrl = getAppUrl();
+
     const supabase = createRouteClient(req, res);
     const { data: userData, error: userErr } = await supabase.auth.getUser();
 
@@ -45,7 +56,7 @@ export async function POST(req: NextRequest) {
 
     const session = await stripe.billingPortal.sessions.create({
       customer: profile.stripe_customer_id,
-      return_url: `${APP_URL}/?billing=portal`,
+      return_url: `${appUrl}/?billing=portal`,
     });
 
     return NextResponse.json({ success: true, url: session.url });

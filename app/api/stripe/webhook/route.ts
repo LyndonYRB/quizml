@@ -25,6 +25,13 @@ function planFromPriceId(priceId?: string | null): "monthly" | "yearly" | "free"
   if (!priceId) return "free";
   if (priceId === process.env.STRIPE_PRICE_MONTHLY) return "monthly";
   if (priceId === process.env.STRIPE_PRICE_YEARLY) return "yearly";
+
+  console.error("stripe webhook price_id mismatch:", {
+    priceId,
+    expectedMonthlyPriceId: process.env.STRIPE_PRICE_MONTHLY ?? null,
+    expectedYearlyPriceId: process.env.STRIPE_PRICE_YEARLY ?? null,
+  });
+
   return "free";
 }
 
@@ -118,12 +125,27 @@ async function syncSubscriptionEntitlement(sub: Stripe.Subscription) {
   const customerId = typeof sub.customer === "string" ? sub.customer : sub.customer.id;
   const userId = await findUserIdFromCustomer(customerId);
 
-  if (!userId) return;
+  if (!userId) {
+    console.warn("stripe webhook could not map subscription customer to user:", {
+      customerId,
+      subscriptionId: sub.id,
+    });
+    return;
+  }
 
   const firstItem = sub.items.data?.[0];
   const priceId = firstItem?.price?.id ?? null;
   const plan = planFromPriceId(priceId);
   const isPaid = paidFromSubscriptionStatus(sub.status) && plan !== "free";
+
+  if (paidFromSubscriptionStatus(sub.status) && plan === "free") {
+    console.error("stripe webhook active subscription mapped to free plan:", {
+      subscriptionId: sub.id,
+      customerId,
+      status: sub.status,
+      priceId,
+    });
+  }
 
   await upsertEntitlement({
     userId,
@@ -135,6 +157,79 @@ async function syncSubscriptionEntitlement(sub: Stripe.Subscription) {
     currentPeriodEnd: periodEndFromSubscription(sub),
     priceId,
     cancelAtPeriodEnd: sub.cancel_at_period_end,
+  });
+}
+
+async function syncInvoiceEntitlement(
+  invoice: Stripe.Invoice & {
+    customer?: string | Stripe.Customer | Stripe.DeletedCustomer | null;
+    subscription?: string | Stripe.Subscription | null;
+    lines?: Stripe.ApiList<Stripe.InvoiceLineItem>;
+  }
+) {
+  const customerId =
+    typeof invoice.customer === "string"
+      ? invoice.customer
+      : invoice.customer && !invoice.customer.deleted
+      ? invoice.customer.id
+      : null;
+
+  if (!customerId) {
+    console.warn("stripe webhook invoice event missing customer id:", {
+      invoiceId: invoice.id,
+    });
+    return;
+  }
+
+  const subscriptionId =
+    typeof invoice.subscription === "string"
+      ? invoice.subscription
+      : invoice.subscription?.id ?? null;
+
+  if (subscriptionId) {
+    const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+    await syncSubscriptionEntitlement(subscription);
+    return;
+  }
+
+  const userId = await findUserIdFromCustomer(customerId);
+  if (!userId) {
+    console.warn("stripe webhook could not map invoice customer to user:", {
+      customerId,
+      invoiceId: invoice.id,
+    });
+    return;
+  }
+
+  const firstLine = invoice.lines?.data?.[0];
+  const invoiceLine = firstLine as Stripe.InvoiceLineItem & {
+    price?: string | Stripe.Price | null;
+  };
+  const priceId =
+    typeof invoiceLine?.price === "string"
+      ? invoiceLine.price
+      : invoiceLine?.price?.id ?? null;
+  const plan = planFromPriceId(priceId);
+  const isPaid = invoice.status === "paid" && plan !== "free";
+
+  if (invoice.status === "paid" && plan === "free") {
+    console.error("stripe webhook paid invoice mapped to free plan:", {
+      invoiceId: invoice.id,
+      customerId,
+      priceId,
+    });
+  }
+
+  await upsertEntitlement({
+    userId,
+    stripeCustomerId: customerId,
+    stripeSubscriptionId: subscriptionId,
+    plan: isPaid ? plan : "free",
+    isPaid,
+    subscriptionStatus: invoice.status ?? null,
+    currentPeriodEnd: null,
+    priceId,
+    cancelAtPeriodEnd: false,
   });
 }
 
@@ -225,11 +320,24 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ received: true });
     }
 
-    // 4) Payment failed -> remove paid access until Stripe reports active again.
+    // 4) Invoice paid -> restore or confirm access using the same plan mapping rules.
+    if (event.type === "invoice.paid") {
+      const invoice = event.data.object as Stripe.Invoice & {
+        customer?: string | Stripe.Customer | Stripe.DeletedCustomer | null;
+        subscription?: string | Stripe.Subscription | null;
+        lines?: Stripe.ApiList<Stripe.InvoiceLineItem>;
+      };
+      await syncInvoiceEntitlement(invoice);
+
+      return NextResponse.json({ received: true });
+    }
+
+    // 5) Payment failed -> mark access unpaid while preserving plan diagnostics.
     if (event.type === "invoice.payment_failed") {
       const invoice = event.data.object as Stripe.Invoice & {
         customer?: string | Stripe.Customer | Stripe.DeletedCustomer | null;
         subscription?: string | Stripe.Subscription | null;
+        lines?: Stripe.ApiList<Stripe.InvoiceLineItem>;
       };
       const customerId =
         typeof invoice.customer === "string"
@@ -248,14 +356,39 @@ export async function POST(req: NextRequest) {
           ? invoice.subscription
           : invoice.subscription?.id ?? null;
 
+      let priceId: string | null = null;
+      let plan: "free" | "monthly" | "yearly" = "free";
+      let cancelAtPeriodEnd = false;
+      let currentPeriodEnd: string | null = null;
+
+      if (subscriptionId) {
+        const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+        priceId = subscription.items.data?.[0]?.price?.id ?? null;
+        plan = planFromPriceId(priceId);
+        cancelAtPeriodEnd = subscription.cancel_at_period_end;
+        currentPeriodEnd = periodEndFromSubscription(subscription);
+      } else {
+        const firstLine = invoice.lines?.data?.[0];
+        const invoiceLine = firstLine as Stripe.InvoiceLineItem & {
+          price?: string | Stripe.Price | null;
+        };
+        priceId =
+          typeof invoiceLine?.price === "string"
+            ? invoiceLine.price
+            : invoiceLine?.price?.id ?? null;
+        plan = planFromPriceId(priceId);
+      }
+
       await upsertEntitlement({
         userId,
         stripeCustomerId: customerId,
         stripeSubscriptionId: subscriptionId,
-        plan: "free",
+        plan,
         isPaid: false,
         subscriptionStatus: "past_due",
-        currentPeriodEnd: null,
+        currentPeriodEnd,
+        priceId,
+        cancelAtPeriodEnd,
       });
 
       return NextResponse.json({ received: true });

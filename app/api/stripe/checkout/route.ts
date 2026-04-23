@@ -10,8 +10,6 @@ import { createClient } from "@supabase/supabase-js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "");
 
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
-
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || "",
   process.env.SUPABASE_SERVICE_ROLE_KEY || ""
@@ -23,6 +21,17 @@ type ProfileRow = {
   is_paid?: boolean | null;
 };
 
+function getAppUrl() {
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL;
+
+  if (appUrl) return appUrl;
+  if (process.env.NODE_ENV !== "production") return "http://localhost:3000";
+
+  throw new Error(
+    "Missing NEXT_PUBLIC_APP_URL in production. Stripe checkout requires an absolute app URL."
+  );
+}
+
 /* =========================================================
    ROUTE: POST /api/stripe/checkout
    Body: { plan: "monthly" | "yearly" }
@@ -32,6 +41,8 @@ export async function POST(req: NextRequest) {
   const res = NextResponse.next();
 
   try {
+    const appUrl = getAppUrl();
+
     /* ---------------------------------------------------------
        1) AUTH (Required)
     --------------------------------------------------------- */
@@ -131,8 +142,8 @@ export async function POST(req: NextRequest) {
       payment_method_types: ["card"],
       customer: customerId,
       line_items: [{ price: priceId, quantity: 1 }],
-      success_url: `${APP_URL}/?billing=success`,
-      cancel_url: `${APP_URL}/?billing=cancel`,
+      success_url: `${appUrl}/?billing=success`,
+      cancel_url: `${appUrl}/?billing=cancel`,
       subscription_data: {
         metadata: {
           user_id: userId,
