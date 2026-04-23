@@ -17,6 +17,7 @@ function formatUtcResetTimeHint() {
 
 interface LessonFocusFormProps {
   fileName: string;
+  sourceSummary?: string;
   onGenerate: (focusTopic: string) => void | Promise<void>;
   onCancel: () => void;
   generationsLeft: number;
@@ -33,6 +34,7 @@ interface LessonFocusFormProps {
 
 export default function LessonFocusForm({
   fileName,
+  sourceSummary,
   onGenerate,
   onCancel,
   generationsLeft,
@@ -71,6 +73,22 @@ export default function LessonFocusForm({
       {/* -------------------------------------------------------
           HEADER
       -------------------------------------------------------- */}
+      <div className="mb-5 flex items-center gap-2 text-xs text-gray-400">
+        {["Upload", "Ingest", "Learn", "Test"].map((step, index) => (
+          <div key={step} className="flex items-center gap-2">
+            <span
+              className={`rounded-full px-2 py-1 font-medium ${
+                index <= 2
+                  ? "bg-blue-500/20 text-blue-200"
+                  : "bg-gray-700 text-gray-400"
+              }`}
+            >
+              {step}
+            </span>
+            {index < 3 ? <span className="text-gray-600">→</span> : null}
+          </div>
+        ))}
+      </div>
       <h2 className="text-2xl font-bold mb-4">What would you like to learn?</h2>
 
       {/* -------------------------------------------------------
@@ -78,8 +96,11 @@ export default function LessonFocusForm({
       -------------------------------------------------------- */}
       <div className="mb-4 p-3 bg-gray-700 rounded">
         <p className="text-sm text-gray-300">
-          <strong>File:</strong> {fileName}
+          <strong>Source:</strong> {fileName}
         </p>
+        {sourceSummary ? (
+          <p className="text-xs text-gray-400 mt-1">{sourceSummary}</p>
+        ) : null}
         <p className="text-sm text-blue-400 mt-1">
           {isPaid
             ? "QuizML Pro: unlimited generations"

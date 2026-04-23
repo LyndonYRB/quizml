@@ -101,6 +101,12 @@ interface IngestMaterialsResponse {
   message?: string;
 }
 
+type IngestFeedback = {
+  type: "success" | "partial" | "error";
+  message: string;
+  details?: string[];
+};
+
 
 /* =========================================================
    CONSTANTS
@@ -242,6 +248,11 @@ function materialsDisplayName(materials: StudyMaterial[]) {
   return `${materials.length} materials`;
 }
 
+function materialSourceSummary(count: number) {
+  if (count <= 1) return "Built from 1 saved study material.";
+  return `Built from ${count} saved study materials. Cross-document mode enabled.`;
+}
+
 function mergeStudyMaterials(
   currentMaterials: StudyMaterial[],
   nextMaterials: StudyMaterial[]
@@ -267,6 +278,30 @@ function selectedMaterialsSummary(count: number, isPaid: boolean) {
 
   if (count === 1) return "1 material selected";
   return `${count} materials selected`;
+}
+
+function StepIndicator({ currentStep }: { currentStep: "upload" | "learn" }) {
+  const steps = ["Upload", "Ingest", "Learn", "Test"];
+  const activeIndex = currentStep === "upload" ? 0 : 2;
+
+  return (
+    <div className="mb-5 flex items-center gap-2 text-xs text-gray-400">
+      {steps.map((step, index) => (
+        <div key={step} className="flex items-center gap-2">
+          <span
+            className={`rounded-full px-2 py-1 font-medium ${
+              index <= activeIndex
+                ? "bg-blue-500/20 text-blue-200"
+                : "bg-gray-700 text-gray-400"
+            }`}
+          >
+            {step}
+          </span>
+          {index < steps.length - 1 ? <span className="text-gray-600">→</span> : null}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 /* =========================================================
@@ -302,6 +337,7 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
 
   const [uploading, setUploading] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState("");
+  const [ingestFeedback, setIngestFeedback] = useState<IngestFeedback | null>(null);
 
   /* ---------------------------------------------------------
      STATE: Daily usage (client display only)
@@ -518,6 +554,7 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
     setActiveLessonRunId(null);
     setInitialProgress(null);
     clearActiveLessonRunReference(userId);
+    setIngestFeedback(null);
     setShowFocusForm(false);
     e.target.value = "";
   }
@@ -531,7 +568,8 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
     }
 
     setUploading(true);
-    setLoadingMsg("Ingesting PDF...");
+    setLoadingMsg("Extracting text from your PDFs...");
+    setIngestFeedback(null);
 
     try {
       const ingestFormData = new FormData();
@@ -552,6 +590,15 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
 
       if (!ingestResponse.ok || !ingestData.success || ingestedMaterials.length === 0) {
         console.error("Ingestion failed:", ingestData);
+        setIngestFeedback({
+          type: "error",
+          message: "No files were imported.",
+          details: [
+            ingestData.message ||
+              ingestData.error ||
+              "Failed to ingest study material.",
+          ],
+        });
         alert(
           ingestData.message ||
             ingestData.error ||
@@ -559,6 +606,8 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
         );
         return;
       }
+
+      setLoadingMsg("Building your study library...");
 
       if (ingestData.fileErrors?.length) {
         console.warn("Ingestion completed with file errors:", ingestData.fileErrors);
@@ -574,6 +623,19 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
       setStudyMaterials(nextStudyMaterials);
       setSelectedStudyMaterialIds(isPaid ? ingestedIds : ingestedIds.slice(0, 1));
       setFiles([]);
+      setIngestFeedback({
+        type: ingestData.fileErrors?.length ? "partial" : "success",
+        message: ingestData.fileErrors?.length
+          ? `Imported ${ingestedMaterials.length} file${
+              ingestedMaterials.length === 1 ? "" : "s"
+            }, ${ingestData.fileErrors.length} failed.`
+          : `Successfully imported ${ingestedMaterials.length} study material${
+              ingestedMaterials.length === 1 ? "" : "s"
+            }.`,
+        details: ingestData.fileErrors?.map((error) =>
+          `${error.fileName || "File"}: ${error.message || "Import failed."}`
+        ),
+      });
       setShowFocusForm(true);
     } finally {
       setUploading(false);
@@ -589,6 +651,7 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
     setActiveLessonRunId(null);
     setInitialProgress(null);
     clearActiveLessonRunReference(userId);
+    setIngestFeedback(null);
     setShowFocusForm(false);
   }
 
@@ -771,14 +834,14 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
     --------------------------------------------------------- */
 
     setUploading(true);
-    setLoadingMsg("Retrieving study material...");
+    setLoadingMsg("Cross-referencing materials...");
 
     // Rotating status messages while the request runs.
     const messages = [
-      "Extracting text...",
-      "Generating lesson plan...",
+      "Cross-referencing materials...",
+      "Generating micro-lessons...",
+      "Creating quiz questions...",
       "Writing exam traps...",
-      "Creating scenario questions...",
       "Finalizing answers and explanations...",
     ];
     let i = 0;
@@ -889,6 +952,7 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
   fileName={
     materialsDisplayName(selectedMaterials)
   }
+  sourceSummary={materialSourceSummary(selectedMaterials.length)}
   onGenerate={handleGenerateLessons}
   onCancel={() => setShowFocusForm(false)}
   generationsLeft={generationsLeft}
@@ -1060,6 +1124,7 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
 
   return (
     <div className="max-w-2xl mx-auto p-8 bg-gray-800 rounded-lg shadow-xl">
+      <StepIndicator currentStep="upload" />
       <h2 className="text-2xl font-bold mb-6">Upload Study Material</h2>
 
       {/* Daily usage banner */}
@@ -1104,15 +1169,46 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
         </div>
       )}
 
+      {ingestFeedback && (
+        <div
+          className={`mb-4 rounded-lg border p-4 ${
+            ingestFeedback.type === "success"
+              ? "border-emerald-400/30 bg-emerald-500/10"
+              : ingestFeedback.type === "partial"
+                ? "border-yellow-400/30 bg-yellow-500/10"
+                : "border-red-400/30 bg-red-500/10"
+          }`}
+        >
+          <p
+            className={`text-sm font-semibold ${
+              ingestFeedback.type === "success"
+                ? "text-emerald-100"
+                : ingestFeedback.type === "partial"
+                  ? "text-yellow-100"
+                  : "text-red-100"
+            }`}
+          >
+            {ingestFeedback.message}
+          </p>
+          {ingestFeedback.details?.length ? (
+            <ul className="mt-2 space-y-1 text-xs text-white/70">
+              {ingestFeedback.details.map((detail, index) => (
+                <li key={`${detail}-${index}`}>{detail}</li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      )}
+
       {studyMaterials.length > 0 && (
         <div className="mb-4 rounded-lg border border-white/10 bg-gray-700 p-4">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <h3 className="text-sm font-semibold text-white">Your study materials</h3>
+              <h3 className="text-sm font-semibold text-white">Saved Study Materials</h3>
               <p className="mt-1 text-xs text-gray-400">
                 {isPaid
-                  ? "Select one or more saved materials for the next lesson run."
-                  : "Free plan can generate from one saved material at a time."}
+                  ? "Previously ingested materials ready for lesson generation."
+                  : "Previously ingested materials ready for lesson generation. Free plan can use one at a time."}
               </p>
             </div>
             {selectedStudyMaterialIds.length > 0 && (
@@ -1179,8 +1275,11 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
 
       <div className="mb-6">
         <label className="block mb-2 text-sm text-gray-300">
-          Choose a PDF file (max {maxFileMb}MB for {isPaid ? "paid" : "free"} plan)
+          Choose local PDF files to ingest (max {maxFileMb}MB for {isPaid ? "paid" : "free"} plan)
         </label>
+        <p className="mb-2 text-xs text-gray-400">
+          Local files are not saved until ingestion completes successfully.
+        </p>
         <input
           type="file"
           accept=".pdf"
@@ -1199,7 +1298,7 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
         <div className="mb-6 p-4 bg-gray-700 rounded-lg">
           <div className="flex items-center justify-between gap-3">
             <p className="text-sm font-semibold text-gray-200">
-              Selected {files.length === 1 ? "file" : "files"}
+              Local files selected for ingestion
             </p>
             <button
               onClick={clearFile}
