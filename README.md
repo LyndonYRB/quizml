@@ -304,8 +304,8 @@ Production should never share live Stripe secrets or webhook secrets with Previe
 M.S. Computer Science, Syracuse University
 
 * GitHub: https://github.com/LyndonYRB
-* Portfolio: coming soon
-* LinkedIn: coming soon
+* Portfolio: https://lyndon-portfolio.netlify.app/
+* LinkedIn: https://www.linkedin.com/in/lyndon-stluce/
 
 ---
 
