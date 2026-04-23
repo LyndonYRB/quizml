@@ -7,7 +7,7 @@ Source Code: https://github.com/LyndonYRB/quizml
 
 ---
 
-Upload PDFs -> Generate lessons -> Test -> Remediate -> Achieve mastery.
+Upload PDFs → Generate lessons → Test → Remediate → Achieve mastery.
 
 ---
 
@@ -31,9 +31,9 @@ This enforces true understanding, not guesswork.
 
 ### Multi-PDF Ingestion
 
-* Upload one or multiple PDFs based on plan
-* Extracts and chunks text intelligently
-* Stores materials in Supabase for reuse
+* Upload one or multiple PDFs depending on plan
+* Extract and chunk study material for retrieval and reuse
+* Store indexed materials in Supabase
 
 ### AI-Generated Micro-Lessons
 
@@ -81,8 +81,8 @@ This enforces true understanding, not guesswork.
 
 **Backend**
 
-* Next.js API Routes
-* Prisma ORM
+* Next.js Route Handlers
+* Supabase server/client helpers
 
 **Database**
 
@@ -175,8 +175,8 @@ Most learning tools:
 QuizML:
 * Enforces **100% mastery**
 * Adapts to mistakes
-* Uses your actual materials
-* Combines AI + pedagogy
+* Uses **your actual materials**
+* Combines **AI + pedagogy**
 
 ---
 
@@ -193,17 +193,21 @@ npm install
 Create a `.env.local` file:
 
 ```env
-DATABASE_URL=your_supabase_db_url
 OPENAI_API_KEY=your_openai_key
 NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
 SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
-STRIPE_SECRET_KEY=sk_test_or_live_...
+STRIPE_SECRET_KEY=sk_test_...
 STRIPE_WEBHOOK_SECRET=whsec_...
 STRIPE_PRICE_MONTHLY=price_...
 STRIPE_PRICE_YEARLY=price_...
 NEXT_PUBLIC_APP_URL=http://localhost:3000
 ```
+
+Notes:
+
+* Local development should use Stripe test-mode keys, webhook secret, and price IDs.
+* `NEXT_PUBLIC_APP_URL` should stay `http://localhost:3000` for local development unless you are intentionally testing against another local domain.
 
 ---
 
@@ -255,20 +259,32 @@ Subscribe the webhook to these events:
 
 Notes:
 
-* The app creates Checkout Sessions and Billing Portal sessions entirely on the server, so `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` is not currently required.
+* Checkout Sessions and Billing Portal sessions are created entirely on the server, so `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` is not currently required unless frontend Stripe.js is added later.
 * If a subscription uses a price ID that does not match `STRIPE_PRICE_MONTHLY` or `STRIPE_PRICE_YEARLY`, QuizML will not grant Pro access and will log a diagnostic error so the mismatch is easier to spot.
 
 ---
 
 ## Deployment
 
-Deployed on Vercel:
+QuizML.ai is designed to deploy cleanly on Vercel:
 
 ```bash
 vercel
 ```
 
-Make sure environment variables are set in the Vercel dashboard with separate values for Production, Preview, and Development where appropriate.
+Recommended Vercel environment separation:
+
+* **Production**
+  * Use live Stripe values for `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_MONTHLY`, and `STRIPE_PRICE_YEARLY`
+  * Set `NEXT_PUBLIC_APP_URL` to your production domain
+* **Preview**
+  * Use Stripe test-mode values only
+  * Use a preview-safe `NEXT_PUBLIC_APP_URL` if you plan to test billing flows in preview deployments
+* **Development**
+  * Use local/test Stripe values only
+  * Keep `NEXT_PUBLIC_APP_URL=http://localhost:3000`
+
+Production should never share live Stripe secrets or webhook secrets with Preview or Development.
 
 ---
 
@@ -288,8 +304,8 @@ Make sure environment variables are set in the Vercel dashboard with separate va
 M.S. Computer Science, Syracuse University
 
 * GitHub: https://github.com/LyndonYRB
-* Portfolio: (add link)
-* LinkedIn: (add link)
+* Portfolio: coming soon
+* LinkedIn: coming soon
 
 ---
 
