@@ -2,7 +2,7 @@
 
 **AI-powered microlearning from your study materials**
 
-🌐 **Live Demo:** https://your-vercel-url.vercel.app
+🌐 **Live Demo:** https://quizml-49chxx1n8-lyndonstluce-5610s-projects.vercel.app/
 📂 **Source Code:** https://github.com/YOUR_USERNAME/quizml
 
 ---
