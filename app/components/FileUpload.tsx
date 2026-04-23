@@ -92,6 +92,11 @@ interface IngestMaterialsResponse {
   success?: boolean;
   studyMaterials?: StudyMaterial[];
   chunkCounts?: Record<string, number>;
+  fileErrors?: Array<{
+    fileName?: string;
+    stage?: string;
+    message?: string;
+  }>;
   error?: string;
   message?: string;
 }
@@ -224,11 +229,6 @@ function formatMaterialDate(value: string) {
   }).format(date);
 }
 
-function filesDisplayName(files: File[]) {
-  if (files.length === 1) return files[0].name;
-  return `${files.length} files`;
-}
-
 function fileIdentity(file: File) {
   return `${file.name}:${file.size}:${file.lastModified}`;
 }
@@ -240,6 +240,22 @@ function materialsSignature(materialIds: string[]) {
 function materialsDisplayName(materials: StudyMaterial[]) {
   if (materials.length === 1) return materials[0].file_name;
   return `${materials.length} materials`;
+}
+
+function mergeStudyMaterials(
+  currentMaterials: StudyMaterial[],
+  nextMaterials: StudyMaterial[]
+) {
+  const byId = new Map(currentMaterials.map((material) => [material.id, material]));
+
+  nextMaterials.forEach((material) => {
+    byId.set(material.id, material);
+  });
+
+  return Array.from(byId.values()).sort(
+    (a, b) =>
+      new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+  );
 }
 
 function selectedMaterialsSummary(count: number, isPaid: boolean) {
@@ -506,9 +522,63 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
     e.target.value = "";
   }
 
-  function handleUploadClick() {
+  async function handleUploadClick() {
     if (files.length === 0 && selectedStudyMaterialIds.length === 0) return;
-    setShowFocusForm(true);
+
+    if (files.length === 0) {
+      setShowFocusForm(true);
+      return;
+    }
+
+    setUploading(true);
+    setLoadingMsg("Ingesting PDF...");
+
+    try {
+      const ingestFormData = new FormData();
+      files.forEach((selectedFile) => {
+        ingestFormData.append("files", selectedFile);
+      });
+
+      const ingestResponse = await fetch("/api/ingest-materials", {
+        method: "POST",
+        body: ingestFormData,
+      });
+      const ingestData = (await ingestResponse
+        .json()
+        .catch(() => ({}))) as IngestMaterialsResponse;
+      const ingestedMaterials = Array.isArray(ingestData.studyMaterials)
+        ? ingestData.studyMaterials
+        : [];
+
+      if (!ingestResponse.ok || !ingestData.success || ingestedMaterials.length === 0) {
+        console.error("Ingestion failed:", ingestData);
+        alert(
+          ingestData.message ||
+            ingestData.error ||
+            "Failed to ingest study material."
+        );
+        return;
+      }
+
+      if (ingestData.fileErrors?.length) {
+        console.warn("Ingestion completed with file errors:", ingestData.fileErrors);
+      }
+
+      const refreshedMaterials = await refreshStudyMaterials();
+      const nextStudyMaterials = mergeStudyMaterials(
+        refreshedMaterials,
+        ingestedMaterials
+      );
+      const ingestedIds = ingestedMaterials.map((material) => material.id);
+
+      setStudyMaterials(nextStudyMaterials);
+      setSelectedStudyMaterialIds(isPaid ? ingestedIds : ingestedIds.slice(0, 1));
+      setFiles([]);
+      setShowFocusForm(true);
+    } finally {
+      setUploading(false);
+      setLoadingMsg("");
+    }
   }
 
   function clearFile() {
@@ -637,60 +707,18 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
   ========================================================= */
 
   async function handleGenerateLessons(focusTopic: string) {
-    if (files.length === 0 && selectedStudyMaterialIds.length === 0) return;
+    if (selectedStudyMaterialIds.length === 0) {
+      alert("Select or ingest at least one saved study material first.");
+      setShowFocusForm(false);
+      return;
+    }
 
     /* ---------------------------------------------------------
        1) Cache lookup (skip API if cached & fresh)
     --------------------------------------------------------- */
 
-    let generationMaterialIds = selectedStudyMaterialIds;
-    let currentStudyMaterials = studyMaterials;
-
-    if (files.length > 0) {
-      setUploading(true);
-      setLoadingMsg("Ingesting PDF...");
-
-      const ingestFormData = new FormData();
-      files.forEach((selectedFile) => {
-        ingestFormData.append("files", selectedFile);
-      });
-
-      const ingestResponse = await fetch("/api/ingest-materials", {
-        method: "POST",
-        body: ingestFormData,
-      });
-      const ingestData = (await ingestResponse
-        .json()
-        .catch(() => ({}))) as IngestMaterialsResponse;
-
-      if (!ingestResponse.ok || !ingestData.success) {
-        console.error("Ingestion failed:", ingestData);
-        setUploading(false);
-        setLoadingMsg("");
-        alert(
-          ingestData.message ||
-            ingestData.error ||
-            "Failed to ingest study material."
-        );
-        return;
-      }
-
-      const ingestedIds =
-        ingestData.studyMaterials?.map((material) => material.id) ?? [];
-      const refreshedMaterials = await refreshStudyMaterials();
-      currentStudyMaterials = refreshedMaterials;
-
-      generationMaterialIds = isPaid
-        ? Array.from(new Set([...selectedStudyMaterialIds, ...ingestedIds]))
-        : ingestedIds.slice(0, 1);
-
-      if (generationMaterialIds.length === 0 && refreshedMaterials[0]?.id) {
-        generationMaterialIds = [refreshedMaterials[0].id];
-      }
-
-      setSelectedStudyMaterialIds(generationMaterialIds);
-      setFiles([]);
-    }
+    const generationMaterialIds = selectedStudyMaterialIds;
+    const currentStudyMaterials = studyMaterials;
 
     if (generationMaterialIds.length === 0) return;
 
@@ -851,7 +879,7 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
      RENDER: Focus form step
   ========================================================= */
 
-  if (showFocusForm && (files.length > 0 || selectedStudyMaterialIds.length > 0)) {
+  if (showFocusForm && selectedStudyMaterialIds.length > 0) {
     const selectedMaterials = studyMaterials.filter((material) =>
       selectedStudyMaterialIds.includes(material.id)
     );
@@ -859,9 +887,7 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
     return (
       <LessonFocusForm
   fileName={
-    files.length > 0
-      ? filesDisplayName(files)
-      : materialsDisplayName(selectedMaterials)
+    materialsDisplayName(selectedMaterials)
   }
   onGenerate={handleGenerateLessons}
   onCancel={() => setShowFocusForm(false)}
