@@ -2,6 +2,11 @@
 
 **AI-powered microlearning from your study materials**
 
+🌐 **Live Demo:** https://your-vercel-url.vercel.app
+📂 **Source Code:** https://github.com/YOUR_USERNAME/quizml
+
+---
+
 Upload PDFs → Generate lessons → Test → Remediate → Achieve mastery.
 
 ---
