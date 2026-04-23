@@ -3,7 +3,7 @@
 **AI-powered microlearning from your study materials**
 
 🌐 **Live Demo:** https://quizml-49chxx1n8-lyndonstluce-5610s-projects.vercel.app/
-📂 **Source Code:** https://github.com/YOUR_USERNAME/quizml
+📂 **Source Code:** https://github.com/LyndonYRB/quizml
 
 ---
 
@@ -186,7 +186,7 @@ QuizML:
 ## 🛠️ Local Setup
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/quizml
+git clone https://github.com/LyndonYRB/quizml
 cd quizml
 npm install
 ```
@@ -256,7 +256,7 @@ Make sure environment variables are set in Vercel dashboard.
 **Lyndon St. Luce**
 M.S. Computer Science — Syracuse University
 
-* GitHub: https://github.com/YOUR_USERNAME
+* GitHub: https://github.com/LyndonYRB
 * Portfolio: (add link)
 * LinkedIn: (add link)
 
