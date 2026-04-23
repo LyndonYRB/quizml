@@ -1,348 +1,270 @@
-# QuizML
+# QuizML.ai 🚀
 
-**AI-Powered Multi-Document Learning & Quiz System (RAG + Adaptive Remediation)**
+**AI-powered microlearning from your study materials**
 
-QuizML is an AI-driven learning platform that transforms PDFs into structured micro-lessons, quizzes, and adaptive remediation using a multi-document Retrieval-Augmented Generation (RAG) pipeline.
+Upload PDFs → Generate lessons → Test → Remediate → Achieve mastery.
 
-Unlike basic AI summarizers, QuizML:
+---
 
-- cross-references multiple documents
-- generates exam-style questions
-- adapts learning based on user performance
-- stores source chunks and lesson-run links for traceable generation
+## 📌 Overview
 
-## Features
+QuizML.ai is an AI-driven learning platform that transforms raw study materials into structured, interactive micro-learning experiences.
 
-### Multi-File AI Learning
+Instead of passively reading PDFs, users:
 
-- Upload multiple PDFs such as Security+, PenTest+, class notes, or study guides.
-- System cross-references selected saved materials.
-- Supports cumulative uploads, so users do not need to re-upload PDFs for each new lesson run.
-- Free users can work with one study material at a time.
-- Paid users can generate from multiple saved study materials.
+* Upload study materials
+* Generate targeted lessons
+* Take mastery-based quizzes
+* Receive adaptive remedial learning
+* Must achieve **100% mastery** before progressing
 
-### Retrieval-Augmented Generation (RAG)
+This enforces **true understanding**, not guesswork.
 
-Text is:
+---
 
-```text
-extracted -> chunked -> embedded -> stored -> retrieved -> reranked -> generated
-```
+## ⚡ Key Features
 
-The retrieval layer uses:
+### 📄 Multi-PDF Ingestion
 
-- Supabase Postgres with pgvector
-- OpenAI embeddings
-- vector search first
-- keyword fallback when vectors are missing or unavailable
-- LLM reranking before lesson generation
+* Upload one or multiple PDFs (based on plan)
+* Extracts and chunks text intelligently
+* Stores materials in Supabase for reuse
 
-Lessons are generated from retrieved chunk subsets, not raw uploaded PDFs.
+### 🧠 AI-Generated Micro-Lessons
 
-### Micro-Learning System
+* Converts raw text into:
 
-- Breaks material into digestible lessons.
-- Uses focus-based prompts such as "network ports" or "SQL injection."
-- Produces structured explanations, key points, exam keywords, and common traps.
+  * Clear explanations
+  * Key points
+  * Exam-focused insights
+  * Common pitfalls
 
-### AI-Generated Quizzes
+### 🧪 Mastery-Based Quizzing
 
-- Scenario-based questions.
-- Exam-style distractors and trap answers.
-- Explanations and hints tied to concept tags.
+* 3-question quizzes per lesson
+* Must answer **all correctly to proceed**
+* Immediate feedback with explanations
 
-### Adaptive Remediation
+### 🔁 Adaptive Remedial Learning
 
-- Missed questions feed concept-level review signals.
-- Learners can revisit weak areas.
-- Progress is persisted for lesson resume.
+* Incorrect answers trigger:
 
-### Final Assessment
+  * Focused micro-lessons
+  * Targeted concept reinforcement
+* Then re-test until mastery
 
-- Comprehensive final test across the generated lesson set.
-- Strict schema: exactly 5 lessons, 3 quiz questions per lesson, and 10 final test questions.
+### 🎯 Final Mastery Test
 
-### User Feedback System
+* 10-question final exam
+* No hints
+* Requires **10/10 to complete**
 
-- Users can report bad or incorrect questions.
-- Reports are stored for future model and prompt refinement.
+### 💳 Subscription System
 
-## Architecture
+* Free vs Pro plan (Stripe integration)
+* Pro unlocks:
 
-### Pipeline Overview
+  * Multiple PDFs
+  * Unlimited generations
+  * Higher upload limits
 
-```text
-PDF Upload
-   ↓
-Text Extraction (unpdf)
-   ↓
-Chunking
-   ↓
-Embeddings (OpenAI)
-   ↓
-Supabase Postgres + pgvector
-   ↓
-Vector Retrieval
-   ↓
-Keyword Fallback
-   ↓
-LLM Reranking
-   ↓
-Lesson Generation
-   ↓
-Quiz + Remediation Loop
-```
+---
 
-### Data Flow
+## 🏗️ Tech Stack
 
-1. User uploads one or more PDFs.
-2. `/api/ingest-materials` extracts text with `unpdf`.
-3. Extracted text is normalized and split into deterministic chunks.
-4. Chunks are inserted into `study_material_chunks`.
-5. Embeddings are generated with OpenAI and stored when available.
-6. Embedding failures do not block ingestion; chunks remain usable through keyword fallback.
-7. User selects saved study materials and enters a focus topic.
-8. `/api/generate-lessons` retrieves relevant chunks using pgvector.
-9. If vector retrieval fails, keyword retrieval is used.
-10. Candidate chunks are reranked with a lightweight LLM step.
-11. Lesson generation uses only the final retrieved and reranked chunk subset.
-12. `lesson_run_materials` and `lesson_run_chunks` store source traceability.
+**Frontend**
 
-## Tech Stack
+* Next.js (App Router)
+* Tailwind CSS
 
-### Frontend
+**Backend**
 
-- Next.js App Router
-- React
-- Tailwind CSS
+* Next.js API Routes
+* Prisma ORM
 
-### Backend
+**Database**
 
-- Next.js API routes on Vercel
-- Supabase Auth
-- Supabase Postgres
-- Supabase Row Level Security
-- pgvector
-- OpenAI API for embeddings, reranking, and lesson generation
+* Supabase (PostgreSQL + pgvector)
 
-### Infrastructure
+**AI**
 
-- Vercel deployment
-- Supabase database and auth
-- Stripe Checkout, webhooks, and Billing Portal
+* OpenAI (lesson + quiz generation)
+* Embeddings for semantic chunking
 
-## Monetization Model
+**Payments**
 
-### Free Tier
+* Stripe (subscriptions + billing portal)
 
-- One PDF per ingest action.
-- One saved study material per generation.
-- Daily generation limit.
-- 10MB PDF upload limit.
+**Deployment**
 
-### Paid Tier
+* Vercel
 
-- Multi-file ingestion.
-- Multi-document lesson generation.
-- Higher upload limits.
-- Expanded usage through Stripe-backed subscription state.
+---
 
-## Key Engineering Challenges Solved
+## 📸 Demo Walkthrough
 
-### Multi-File Ingestion Pipeline
+### 1. Upload Study Materials
 
-- Handles batch uploads safely.
-- Continues processing other files if one file fails.
-- Returns partial success only for materials with verified chunk persistence.
-- Cleans up failed material inserts when chunk persistence fails.
+![Upload](public/screenshots/quizml-01-upload.png)
 
-### Vector Database Integration
+### 2. Ingestion Success
 
-- Stores OpenAI embeddings in Supabase pgvector.
-- Uses HNSW indexing for vector search.
-- Keeps keyword fallback for chunks without embeddings.
-- Avoids sending invalid vector payloads to Postgres.
+![Ingest](public/screenshots/quizml-02-saved-materials.png)
 
-### Rate Limiting & Reliability
+### 3. Prompt Learning Focus
 
-- Sequential chunk embedding avoids overwhelming OpenAI rate limits.
-- OpenAI calls use bounded retry behavior where appropriate.
-- Failed embeddings do not fail ingestion.
-- Vector insert failure falls back to inserting rows without embeddings.
+![Prompt](public/screenshots/quizml-03-focus.png)
 
-### Data Integrity Guarantees
+### 4. AI Micro-Lesson Generated
 
-- A file is not treated as successfully ingested until both `study_materials` and `study_material_chunks` rows exist.
-- Chunk count is verified before returning material success.
-- The frontend only advances to lesson focus after confirmed backend ingestion.
-- Lesson generation uses saved material IDs, not raw local File objects.
+![Lesson](public/screenshots/quizml-04-lesson.png)
 
-### Frontend/Backend Contract Enforcement
+### 5. Mastery Quiz
 
-- Upload selection is separate from material ingestion.
-- The lesson prompt appears only after successful DB-backed ingestion.
-- Partial failures are surfaced through structured `fileErrors`.
+![Quiz](public/screenshots/quizml-05-quiz.png)
 
-## Required Environment Variables
+### 6. Adaptive Remedial Learning
 
-Create `.env.local`:
+![Remedial](public/screenshots/quizml-06-remedial.png)
+
+### 7. Final Mastery Test
+
+![Final Test](public/screenshots/quizml-07-final-test.png)
+
+### 8. Course Completion (100% Mastery)
+
+![Completion](public/screenshots/quizml-08-score.png)
+
+---
+
+## 🔄 How It Works
+
+1. **Upload PDFs**
+
+   * Files are sent to `/api/ingest-materials`
+   * Text is extracted and chunked
+
+2. **Embedding + Storage**
+
+   * Each chunk is embedded
+   * Stored in `study_material_chunks`
+
+3. **Lesson Generation**
+
+   * User provides a focus prompt
+   * Relevant chunks are retrieved
+   * AI generates structured lessons
+
+4. **Quiz + Feedback Loop**
+
+   * AI generates questions
+   * User must achieve mastery
+   * Remedial lessons triggered dynamically
+
+---
+
+## 🧠 What Makes This Different
+
+Most learning tools:
+❌ Show content
+❌ Give quizzes
+❌ Move on regardless
+
+QuizML:
+✅ Enforces **100% mastery**
+✅ Adapts to mistakes
+✅ Uses **your actual materials**
+✅ Combines AI + pedagogy
+
+---
+
+## 🛠️ Local Setup
 
 ```bash
-OPENAI_API_KEY=
-
-NEXT_PUBLIC_SUPABASE_URL=
-NEXT_PUBLIC_SUPABASE_ANON_KEY=
-SUPABASE_SERVICE_ROLE_KEY=
-
-STRIPE_SECRET_KEY=
-STRIPE_WEBHOOK_SECRET=
-STRIPE_PRICE_MONTHLY=
-STRIPE_PRICE_YEARLY=
-
-NEXT_PUBLIC_APP_URL=http://localhost:3000
-```
-
-Notes:
-
-- `OPENAI_API_KEY` is required for embeddings, reranking, and lesson generation.
-- `SUPABASE_SERVICE_ROLE_KEY` is used only by trusted server-side routes.
-- `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` are used by browser and route clients.
-- `NEXT_PUBLIC_APP_URL` should be your deployed app origin in production.
-
-## Supabase Setup
-
-Apply the schema and migrations in `supabase/migrations`.
-
-The database includes:
-
-- `profiles`
-- `daily_usage`
-- `study_materials`
-- `study_material_chunks`
-- `lesson_runs`
-- `lesson_run_materials`
-- `lesson_run_chunks`
-- `concept_mastery`
-- `question_attempts`
-- `question_reports`
-- `increment_daily_generation(...)`
-- `match_study_material_chunks(...)`
-
-pgvector must be enabled:
-
-```sql
-create extension if not exists vector;
-```
-
-The chunk embedding migration adds:
-
-```sql
-alter table public.study_material_chunks
-  add column if not exists embedding vector(1536);
-```
-
-## Stripe Setup
-
-- Create monthly and yearly subscription prices.
-- Put price IDs in `STRIPE_PRICE_MONTHLY` and `STRIPE_PRICE_YEARLY`.
-- Configure Stripe Billing Portal.
-- Configure a webhook endpoint for `/api/stripe/webhook`.
-- Put the webhook signing secret in `STRIPE_WEBHOOK_SECRET`.
-
-Stripe webhooks sync paid status and plan state into Supabase profiles.
-
-## Run Locally
-
-Install dependencies:
-
-```bash
+git clone https://github.com/YOUR_USERNAME/quizml
+cd quizml
 npm install
 ```
 
-Start the dev server:
+### Environment Variables
+
+Create a `.env.local` file:
+
+```env
+DATABASE_URL=your_supabase_db_url
+OPENAI_API_KEY=your_openai_key
+STRIPE_SECRET_KEY=your_stripe_key
+NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=your_key
+```
+
+---
+
+## ▶️ Run Locally
 
 ```bash
 npm run dev
 ```
 
-Open:
-
-```text
+Visit:
 http://localhost:3000
-```
 
-Run production checks:
+---
+
+## 💳 Stripe Setup (Test Mode)
+
+* Create products:
+
+  * Monthly plan
+  * Yearly plan
+* Enable customer portal
+* Add webhook for:
+
+  * `checkout.session.completed`
+  * `customer.subscription.updated`
+
+---
+
+## 🚀 Deployment
+
+Deployed on Vercel:
 
 ```bash
-npm run build
+vercel
 ```
 
-## Deployment Notes
+Make sure environment variables are set in Vercel dashboard.
 
-For Vercel:
+---
 
-- Set all environment variables in Vercel project settings.
-- Apply Supabase migrations before deploying dependent routes.
-- Confirm Stripe webhook URL points to the deployed `/api/stripe/webhook`.
-- Watch Vercel runtime logs for ingestion, embedding, retrieval, rerank, and generation stages.
+## 📈 Future Improvements
 
-The app is serverless-compatible. Long-running work is bounded by file size limits, chunk limits, retrieval limits, and retry caps.
+* 🔍 Semantic search over PDFs
+* 📊 Learning analytics dashboard
+* 🧠 Spaced repetition system
+* 📱 Mobile optimization
+* 🗂️ Folder-based material organization
 
-## Example Use Case
+---
 
-Upload:
+## 👨‍💻 Author
 
-- Security+ study guide
-- PenTest+ notes
+**Lyndon St. Luce**
+M.S. Computer Science — Syracuse University
 
-Prompt:
+* GitHub: https://github.com/YOUR_USERNAME
+* Portfolio: (add link)
+* LinkedIn: (add link)
 
-> Explain common network ports from attacker and defender perspectives.
+---
 
-QuizML will:
+## ⭐ Final Note
 
-- combine relevant chunks from both documents
-- generate a lesson with offensive and defensive context
-- create exam-style questions
-- adapt review signals based on incorrect answers
+This project demonstrates:
 
-## Demo Flow
+* Full-stack development
+* AI integration
+* Real-world monetization
+* Production debugging & iteration
 
-```text
-Upload -> Ingest -> Select Materials -> Generate -> Miss Question -> Remediate -> Pass Final Test
-```
-
-## Future Improvements
-
-- Smarter reranking models
-- Topic clustering across documents
-- Study progress dashboard
-- Personalized difficulty scaling
-- Exportable notes and flashcards
-- Full lesson-run history picker
-
-## Why This Project Stands Out
-
-QuizML is not just an AI wrapper.
-
-It demonstrates:
-
-- real-world RAG architecture
-- multi-document reasoning
-- production-grade ingestion reliability
-- vector database integration
-- adaptive learning system design
-- SaaS monetization with Stripe
-
-## Resume Bullets
-
-- Built a full-stack AI learning SaaS with Next.js App Router, Supabase, Stripe subscriptions, and Vercel deployment.
-- Implemented a production RAG pipeline with PDF ingestion, chunk storage, OpenAI embeddings, pgvector retrieval, keyword fallback, LLM reranking, and traceable lesson runs.
-- Designed resilient multi-file ingestion with verified chunk persistence, embedding failure fallback, and strict frontend/backend contract enforcement.
-- Built schema-validated AI lesson generation with micro-lessons, quizzes, final mastery tests, concept tags, and persisted resume state.
-
-## Contact
-
-Built by **Lyndon St. Luce**
-
-M.S. Computer Science @ Syracuse University
+Built to solve a real problem:
+👉 Turning passive studying into active mastery.
