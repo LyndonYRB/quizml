@@ -166,11 +166,16 @@ export async function POST(request: NextRequest) {
 
     for (const file of files) {
       let text = "";
-      let fileBytes: Uint8Array | null = null;
+      let fileBuffer: Buffer | null = null;
       try {
-        const bytes = await file.arrayBuffer();
-        fileBytes = new Uint8Array(bytes);
-        const extracted = await extractText(fileBytes, {
+        const arrayBuffer = await file.arrayBuffer();
+        fileBuffer = Buffer.from(arrayBuffer);
+
+        if (fileBuffer.byteLength <= 0) {
+          throw new Error("Uploaded PDF is empty.");
+        }
+
+        const extracted = await extractText(new Uint8Array(fileBuffer), {
           mergePages: true,
         });
         text = extracted.text ?? "";
@@ -223,13 +228,21 @@ export async function POST(request: NextRequest) {
         storagePath
       );
 
+      if (!fileBuffer) {
+        return NextResponse.json(
+          { error: `Could not prepare ${file.name} for upload.` },
+          { status: 500 }
+        );
+      }
+
       try {
         await uploadStudyMaterialFile({
           supabase: supabaseAdmin,
           bucket: studyMaterialsBucket,
           path: storagePath,
-          body: fileBytes ?? new Uint8Array(),
+          body: fileBuffer,
           contentType: file.type || "application/pdf",
+          fileSize: file.size,
         });
       } catch (storageError) {
         console.error("process-pdf file upload failed:", {
