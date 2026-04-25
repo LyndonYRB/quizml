@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createRouteClient } from "@/lib/supabase/server";
+import {
+  createRouteClient,
+  createServiceRoleClient,
+} from "@/lib/supabase/server";
+import { resolveStudyMaterialOpenUrl } from "@/lib/study-material-storage";
 
 type StudyMaterialRow = {
   id: string;
@@ -8,11 +12,17 @@ type StudyMaterialRow = {
   created_at: string;
 };
 
+type StudyMaterialResponseRow = StudyMaterialRow & {
+  open_url: string | null;
+  file_available: boolean;
+};
+
 export async function GET(request: NextRequest) {
   const response = NextResponse.next();
 
   try {
     const supabase = createRouteClient(request, response);
+    const supabaseAdmin = createServiceRoleClient();
     const { data: userData, error: userErr } = await supabase.auth.getUser();
 
     if (userErr || !userData?.user) {
@@ -33,9 +43,24 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    const studyMaterials: StudyMaterialResponseRow[] = await Promise.all(
+      (data ?? []).map(async (material) => {
+        const { openUrl, fileAvailable } = await resolveStudyMaterialOpenUrl({
+          supabase: supabaseAdmin,
+          storedFileUrl: material.file_url,
+        });
+
+        return {
+          ...material,
+          open_url: openUrl,
+          file_available: fileAvailable,
+        };
+      })
+    );
+
     return NextResponse.json({
       success: true,
-      studyMaterials: data ?? [],
+      studyMaterials,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";

@@ -8,12 +8,17 @@ import {
   createRouteClient,
   createServiceRoleClient,
 } from "@/lib/supabase/server";
+import {
+  buildStoredFileReference,
+  buildStudyMaterialStoragePath,
+  deleteStoredStudyMaterialFile,
+  getStudyMaterialsBucket,
+  uploadStudyMaterialFile,
+} from "@/lib/study-material-storage";
 
 const MAX_PDF_BYTES_FREE = 10 * 1024 * 1024;
 const MAX_PDF_BYTES_PAID = 50 * 1024 * 1024;
 const MIN_EXTRACTED_CHARS = 100;
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "";
-
 type SavedMaterial = {
   id: string;
   file_name: string;
@@ -31,10 +36,12 @@ async function cleanupMaterial({
   supabaseAdmin,
   materialId,
   fileName,
+  storedFileUrl,
 }: {
   supabaseAdmin: ReturnType<typeof createServiceRoleClient>;
   materialId: string;
   fileName: string;
+  storedFileUrl?: string | null;
 }) {
   const { error } = await supabaseAdmin
     .from("study_materials")
@@ -48,12 +55,11 @@ async function cleanupMaterial({
       message: error.message,
     });
   }
-}
 
-function materialUrl(materialId: string) {
-  return APP_URL
-    ? `${APP_URL}/?studyMaterialId=${encodeURIComponent(materialId)}`
-    : `/?studyMaterialId=${encodeURIComponent(materialId)}`;
+  await deleteStoredStudyMaterialFile({
+    supabase: supabaseAdmin,
+    storedFileUrl,
+  });
 }
 
 export async function POST(request: NextRequest) {
@@ -123,12 +129,15 @@ export async function POST(request: NextRequest) {
     const savedMaterials: SavedMaterial[] = [];
     const chunkCounts: Record<string, number> = {};
     const fileErrors: FileIngestError[] = [];
+    const studyMaterialsBucket = getStudyMaterialsBucket();
 
     for (const file of files) {
       let text = "";
+      let fileBytes: Uint8Array | null = null;
       try {
         const bytes = await file.arrayBuffer();
-        const extracted = await extractText(new Uint8Array(bytes), {
+        fileBytes = new Uint8Array(bytes);
+        const extracted = await extractText(fileBytes, {
           mergePages: true,
         });
         text = extracted.text ?? "";
@@ -191,13 +200,54 @@ export async function POST(request: NextRequest) {
       }
 
       const materialId = crypto.randomUUID();
+      const storagePath = buildStudyMaterialStoragePath({
+        userId,
+        materialId,
+        fileName: file.name,
+      });
+      const storedFileUrl = buildStoredFileReference(
+        studyMaterialsBucket,
+        storagePath
+      );
+
+      try {
+        await uploadStudyMaterialFile({
+          supabase: supabaseAdmin,
+          bucket: studyMaterialsBucket,
+          path: storagePath,
+          body: fileBytes ?? new Uint8Array(),
+          contentType: file.type || "application/pdf",
+        });
+      } catch (storageError) {
+        console.error("study_materials file upload error:", {
+          fileName: file.name,
+          message:
+            storageError instanceof Error
+              ? storageError.message
+              : "Unknown storage error",
+        });
+        fileErrors.push({
+          fileName: file.name,
+          stage: "file_upload",
+          message:
+            storageError instanceof Error
+              ? storageError.message
+              : "Failed to store uploaded PDF.",
+        });
+        console.warn("ingest-materials file failed:", {
+          fileName: file.name,
+          stage: "file_upload",
+        });
+        continue;
+      }
+
       const { data: material, error: materialErr } = await supabaseAdmin
         .from("study_materials")
         .insert({
           id: materialId,
           user_id: userId,
           file_name: file.name,
-          file_url: materialUrl(materialId),
+          file_url: storedFileUrl,
         })
         .select("id, file_name, file_url, created_at")
         .single();
@@ -217,6 +267,10 @@ export async function POST(request: NextRequest) {
         console.warn("ingest-materials file failed:", {
           fileName: file.name,
           stage: "material_insert",
+        });
+        await deleteStoredStudyMaterialFile({
+          supabase: supabaseAdmin,
+          storedFileUrl,
         });
         continue;
       }
@@ -260,7 +314,12 @@ export async function POST(request: NextRequest) {
           materialId: material.id,
           stage: "chunk_insert",
         });
-        await cleanupMaterial({ supabaseAdmin, materialId: material.id, fileName: file.name });
+        await cleanupMaterial({
+          supabaseAdmin,
+          materialId: material.id,
+          fileName: file.name,
+          storedFileUrl,
+        });
         continue;
       }
 
@@ -292,7 +351,12 @@ export async function POST(request: NextRequest) {
           materialId: material.id,
           stage: "chunk_verify",
         });
-        await cleanupMaterial({ supabaseAdmin, materialId: material.id, fileName: file.name });
+        await cleanupMaterial({
+          supabaseAdmin,
+          materialId: material.id,
+          fileName: file.name,
+          storedFileUrl,
+        });
         continue;
       }
 

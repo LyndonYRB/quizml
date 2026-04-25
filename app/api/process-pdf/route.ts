@@ -24,6 +24,13 @@ import {
   createRouteClient,
   createServiceRoleClient,
 } from "@/lib/supabase/server";
+import {
+  buildStoredFileReference,
+  buildStudyMaterialStoragePath,
+  deleteStoredStudyMaterialFile,
+  getStudyMaterialsBucket,
+  uploadStudyMaterialFile,
+} from "@/lib/study-material-storage";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -32,8 +39,6 @@ const MAX_PDF_BYTES_PAID = 50 * 1024 * 1024;
 const DAILY_LIMIT_FREE = 5;
 const DAILY_LIMIT_PAID = 9999;
 const MIN_EXTRACTED_CHARS = 100;
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "";
-
 type MaterialRow = {
   id: string;
   file_name: string;
@@ -61,12 +66,6 @@ function sanitizeFocusTopic(input: unknown): string {
     .slice(0, 200)
     .replace(/[\u0000-\u001F\u007F]/g, "")
     .trim();
-}
-
-function materialUrl(materialId: string) {
-  return APP_URL
-    ? `${APP_URL}/?studyMaterialId=${encodeURIComponent(materialId)}`
-    : `/?studyMaterialId=${encodeURIComponent(materialId)}`;
 }
 
 function lessonRunFileName(materials: MaterialRow[]) {
@@ -163,12 +162,15 @@ export async function POST(request: NextRequest) {
 
     const { extractText } = await import("unpdf");
     const savedMaterials: MaterialRow[] = [];
+    const studyMaterialsBucket = getStudyMaterialsBucket();
 
     for (const file of files) {
       let text = "";
+      let fileBytes: Uint8Array | null = null;
       try {
         const bytes = await file.arrayBuffer();
-        const extracted = await extractText(new Uint8Array(bytes), {
+        fileBytes = new Uint8Array(bytes);
+        const extracted = await extractText(fileBytes, {
           mergePages: true,
         });
         text = extracted.text ?? "";
@@ -211,13 +213,50 @@ export async function POST(request: NextRequest) {
       }
 
       const materialId = crypto.randomUUID();
+      const storagePath = buildStudyMaterialStoragePath({
+        userId,
+        materialId,
+        fileName: file.name,
+      });
+      const storedFileUrl = buildStoredFileReference(
+        studyMaterialsBucket,
+        storagePath
+      );
+
+      try {
+        await uploadStudyMaterialFile({
+          supabase: supabaseAdmin,
+          bucket: studyMaterialsBucket,
+          path: storagePath,
+          body: fileBytes ?? new Uint8Array(),
+          contentType: file.type || "application/pdf",
+        });
+      } catch (storageError) {
+        console.error("process-pdf file upload failed:", {
+          fileName: file.name,
+          message:
+            storageError instanceof Error
+              ? storageError.message
+              : "Unknown storage error",
+        });
+        return NextResponse.json(
+          {
+            error:
+              storageError instanceof Error
+                ? storageError.message
+                : "Failed to store uploaded PDF.",
+          },
+          { status: 500 }
+        );
+      }
+
       const { data: material, error: materialErr } = await supabaseAdmin
         .from("study_materials")
         .insert({
           id: materialId,
           user_id: userId,
           file_name: file.name,
-          file_url: materialUrl(materialId),
+          file_url: storedFileUrl,
         })
         .select("id, file_name")
         .single();
@@ -228,6 +267,10 @@ export async function POST(request: NextRequest) {
           message: materialErr?.message,
           code: materialErr?.code,
           details: materialErr?.details,
+        });
+        await deleteStoredStudyMaterialFile({
+          supabase: supabaseAdmin,
+          storedFileUrl,
         });
         return NextResponse.json(
           { error: "Failed to store study material." },
@@ -263,6 +306,11 @@ export async function POST(request: NextRequest) {
       });
 
       if (chunkInsert.error) {
+        await supabaseAdmin.from("study_materials").delete().eq("id", material.id);
+        await deleteStoredStudyMaterialFile({
+          supabase: supabaseAdmin,
+          storedFileUrl,
+        });
         return NextResponse.json(
           { error: "Failed to store study material chunks." },
           { status: 500 }
@@ -455,16 +503,12 @@ export async function POST(request: NextRequest) {
     }
 
     const lessonRunId = runRow.id;
-    const fileUrl = APP_URL
-      ? `${APP_URL}/?lessonRunId=${encodeURIComponent(lessonRunId)}`
-      : `/?lessonRunId=${encodeURIComponent(lessonRunId)}`;
 
     console.log("process-pdf study_materials insert starting:", {
       userId,
       isPaid,
       fileNames: files.map((file) => file.name),
       lessonRunId,
-      fileUrl,
     });
 
     const { error: materialLinkErr } = await supabase

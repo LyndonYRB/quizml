@@ -58,6 +58,8 @@ interface StudyMaterial {
   file_name: string;
   file_url: string;
   created_at: string;
+  open_url?: string | null;
+  file_available?: boolean;
 }
 
 interface UsageResponse {
@@ -246,6 +248,10 @@ function materialsSignature(materialIds: string[]) {
 function materialsDisplayName(materials: StudyMaterial[]) {
   if (materials.length === 1) return materials[0].file_name;
   return `${materials.length} materials`;
+}
+
+function canOpenStudyMaterial(material: StudyMaterial) {
+  return Boolean(material.file_available && material.open_url);
 }
 
 function materialSourceSummary(count: number) {
@@ -614,10 +620,10 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
       }
 
       const refreshedMaterials = await refreshStudyMaterials();
-      const nextStudyMaterials = mergeStudyMaterials(
-        refreshedMaterials,
-        ingestedMaterials
-      );
+      const nextStudyMaterials =
+        refreshedMaterials.length > 0
+          ? refreshedMaterials
+          : mergeStudyMaterials(studyMaterials, ingestedMaterials);
       const ingestedIds = ingestedMaterials.map((material) => material.id);
 
       setStudyMaterials(nextStudyMaterials);
@@ -1250,12 +1256,20 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
                     </span>
                   </span>
                 </label>
-                <a
-                  href={material.file_url}
-                  className="shrink-0 text-sm font-semibold text-blue-400 hover:text-blue-300"
-                >
-                  Open
-                </a>
+                {canOpenStudyMaterial(material) ? (
+                  <a
+                    href={material.open_url ?? undefined}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="shrink-0 text-sm font-semibold text-blue-400 hover:text-blue-300"
+                  >
+                    Open
+                  </a>
+                ) : (
+                  <span className="shrink-0 text-sm font-semibold text-gray-500">
+                    File unavailable
+                  </span>
+                )}
               </li>
             ))}
           </ul>
