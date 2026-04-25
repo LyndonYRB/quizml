@@ -32,6 +32,12 @@ type FileIngestError = {
   message: string;
 };
 
+type StoredMaterialCleanupTarget = {
+  materialId: string;
+  fileName: string;
+  storedFileUrl: string;
+};
+
 async function cleanupMaterial({
   supabaseAdmin,
   materialId,
@@ -60,6 +66,23 @@ async function cleanupMaterial({
     supabase: supabaseAdmin,
     storedFileUrl,
   });
+}
+
+async function cleanupBatchMaterials({
+  supabaseAdmin,
+  materials,
+}: {
+  supabaseAdmin: ReturnType<typeof createServiceRoleClient>;
+  materials: StoredMaterialCleanupTarget[];
+}) {
+  for (const material of materials) {
+    await cleanupMaterial({
+      supabaseAdmin,
+      materialId: material.materialId,
+      fileName: material.fileName,
+      storedFileUrl: material.storedFileUrl,
+    });
+  }
 }
 
 export async function POST(request: NextRequest) {
@@ -130,6 +153,7 @@ export async function POST(request: NextRequest) {
     const chunkCounts: Record<string, number> = {};
     const fileErrors: FileIngestError[] = [];
     const studyMaterialsBucket = getStudyMaterialsBucket();
+    const cleanupTargets: StoredMaterialCleanupTarget[] = [];
 
     for (const file of files) {
       let text = "";
@@ -219,26 +243,25 @@ export async function POST(request: NextRequest) {
           contentType: file.type || "application/pdf",
         });
       } catch (storageError) {
+        const message =
+          storageError instanceof Error
+            ? storageError.message
+            : "Failed to upload PDF to Supabase Storage.";
         console.error("study_materials file upload error:", {
           fileName: file.name,
-          message:
-            storageError instanceof Error
-              ? storageError.message
-              : "Unknown storage error",
+          message,
         });
-        fileErrors.push({
-          fileName: file.name,
-          stage: "file_upload",
-          message:
-            storageError instanceof Error
-              ? storageError.message
-              : "Failed to store uploaded PDF.",
+        await cleanupBatchMaterials({
+          supabaseAdmin,
+          materials: cleanupTargets,
         });
-        console.warn("ingest-materials file failed:", {
-          fileName: file.name,
-          stage: "file_upload",
-        });
-        continue;
+        return NextResponse.json(
+          {
+            success: false,
+            error: `Could not upload ${file.name} to storage: ${message}`,
+          },
+          { status: 500 }
+        );
       }
 
       const { data: material, error: materialErr } = await supabaseAdmin
@@ -253,27 +276,36 @@ export async function POST(request: NextRequest) {
         .single();
 
       if (materialErr || !material) {
+        const message =
+          materialErr?.message || `Failed to create study_materials row for ${file.name}.`;
         console.error("study_materials ingest insert error:", {
           fileName: file.name,
-          message: materialErr?.message,
+          message,
           code: materialErr?.code,
           details: materialErr?.details,
-        });
-        fileErrors.push({
-          fileName: file.name,
-          stage: "material_insert",
-          message: materialErr?.message || "Failed to save study material.",
-        });
-        console.warn("ingest-materials file failed:", {
-          fileName: file.name,
-          stage: "material_insert",
         });
         await deleteStoredStudyMaterialFile({
           supabase: supabaseAdmin,
           storedFileUrl,
         });
-        continue;
+        await cleanupBatchMaterials({
+          supabaseAdmin,
+          materials: cleanupTargets,
+        });
+        return NextResponse.json(
+          {
+            success: false,
+            error: `Could not save ${file.name} after upload: ${message}`,
+          },
+          { status: 500 }
+        );
       }
+
+      cleanupTargets.push({
+        materialId: material.id,
+        fileName: file.name,
+        storedFileUrl,
+      });
 
       console.log("ingest-materials material inserted:", {
         userId,
@@ -303,24 +335,30 @@ export async function POST(request: NextRequest) {
       });
 
       if (chunkInsert.error) {
-        fileErrors.push({
+        const message =
+          chunkInsert.error.message ||
+          `Failed to save material chunks for ${file.name}.`;
+        console.error("ingest-materials chunk insert failed:", {
           fileName: file.name,
-          stage: "chunk_insert",
-          message: chunkInsert.error.message || "Failed to save material chunks.",
+          materialId: material.id,
+          message,
         });
-
         console.warn("ingest-materials file failed:", {
           fileName: file.name,
           materialId: material.id,
           stage: "chunk_insert",
         });
-        await cleanupMaterial({
+        await cleanupBatchMaterials({
           supabaseAdmin,
-          materialId: material.id,
-          fileName: file.name,
-          storedFileUrl,
+          materials: cleanupTargets,
         });
-        continue;
+        return NextResponse.json(
+          {
+            success: false,
+            error: `Could not save chunks for ${file.name}: ${message}`,
+          },
+          { status: 500 }
+        );
       }
 
       const { count: persistedChunkCount, error: verifyErr } = await supabaseAdmin
@@ -351,13 +389,19 @@ export async function POST(request: NextRequest) {
           materialId: material.id,
           stage: "chunk_verify",
         });
-        await cleanupMaterial({
+        await cleanupBatchMaterials({
           supabaseAdmin,
-          materialId: material.id,
-          fileName: file.name,
-          storedFileUrl,
+          materials: cleanupTargets,
         });
-        continue;
+        return NextResponse.json(
+          {
+            success: false,
+            error:
+              verifyErr?.message ||
+              `Chunk verification failed for ${file.name}.`,
+          },
+          { status: 500 }
+        );
       }
 
       savedMaterials.push(material);

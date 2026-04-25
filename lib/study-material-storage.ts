@@ -48,7 +48,7 @@ export async function uploadStudyMaterialFile({
   body: ArrayBuffer | Uint8Array;
   contentType?: string;
 }) {
-  const { error } = await supabase.storage.from(bucket).upload(path, body, {
+  const { data, error } = await supabase.storage.from(bucket).upload(path, body, {
     upsert: false,
     contentType: contentType || "application/pdf",
   });
@@ -56,6 +56,12 @@ export async function uploadStudyMaterialFile({
   if (error) {
     throw new Error(error.message || "Failed to upload study material.");
   }
+
+  if (!data?.path) {
+    throw new Error("Storage upload did not return a file path.");
+  }
+
+  return data;
 }
 
 export async function deleteStoredStudyMaterialFile({
