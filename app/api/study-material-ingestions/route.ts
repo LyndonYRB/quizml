@@ -3,6 +3,7 @@ import { createRouteClient } from "@/lib/supabase/server";
 
 type StudyMaterialIngestionRow = {
   id: string;
+  client_file_id: string | null;
   file_name: string;
   status: string;
   error_message: string | null;
@@ -23,12 +24,12 @@ export async function GET(request: NextRequest) {
     }
 
     const startedAfter = request.nextUrl.searchParams.get("startedAfter");
-    const fileNames = request.nextUrl.searchParams.getAll("fileName");
+    const clientFileIds = request.nextUrl.searchParams.getAll("clientFileId");
 
     let query = supabase
       .from("study_material_ingestions")
       .select(
-        "id, file_name, status, error_message, study_material_id, created_at, updated_at"
+        "id, client_file_id, file_name, status, error_message, study_material_id, created_at, updated_at"
       )
       .eq("user_id", userData.user.id);
 
@@ -36,8 +37,8 @@ export async function GET(request: NextRequest) {
       query = query.gte("created_at", startedAfter);
     }
 
-    if (fileNames.length > 0) {
-      query = query.in("file_name", fileNames);
+    if (clientFileIds.length > 0) {
+      query = query.in("client_file_id", clientFileIds);
     }
 
     const { data, error } = await query
@@ -51,16 +52,16 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const latestByFileName = new Map<string, StudyMaterialIngestionRow>();
+    const latestByClientFileId = new Map<string, StudyMaterialIngestionRow>();
     for (const row of data ?? []) {
-      if (!latestByFileName.has(row.file_name)) {
-        latestByFileName.set(row.file_name, row);
+      if (row.client_file_id && !latestByClientFileId.has(row.client_file_id)) {
+        latestByClientFileId.set(row.client_file_id, row);
       }
     }
 
     return NextResponse.json({
       success: true,
-      ingestions: Array.from(latestByFileName.values()),
+      ingestions: Array.from(latestByClientFileId.values()),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";

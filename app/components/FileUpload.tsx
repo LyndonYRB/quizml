@@ -105,6 +105,7 @@ interface IngestMaterialsResponse {
 
 interface StudyMaterialIngestion {
   id: string;
+  client_file_id?: string | null;
   file_name: string;
   status: IngestStatus;
   error_message?: string | null;
@@ -137,6 +138,11 @@ type IngestStatus =
 type LocalFileStatus = {
   status: IngestStatus;
   errorMessage?: string;
+};
+
+type LocalSelectedFile = {
+  clientFileId: string;
+  file: File;
 };
 
 
@@ -267,10 +273,6 @@ function formatMaterialDate(value: string) {
   }).format(date);
 }
 
-function fileIdentity(file: File) {
-  return `${file.name}:${file.size}:${file.lastModified}`;
-}
-
 function ingestStatusLabel(status: IngestStatus) {
   switch (status) {
     case "queued":
@@ -389,7 +391,7 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
      STATE: File + UI flow
   --------------------------------------------------------- */
 
-  const [files, setFiles] = useState<File[]>([]);
+  const [files, setFiles] = useState<LocalSelectedFile[]>([]);
   const [showFocusForm, setShowFocusForm] = useState(false);
   const [lessons, setLessons] = useState<Lesson[]>([]);
   const [finalTest, setFinalTest] = useState<QuizQuestion[]>([]);
@@ -601,14 +603,25 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
     const nextFiles = isPaid
       ? [
           ...files,
-          ...candidateFiles.filter(
-            (candidate) =>
-              !files.some(
-                (currentFile) => fileIdentity(currentFile) === fileIdentity(candidate)
-              )
-          ),
+          ...candidateFiles
+            .filter(
+              (candidate) =>
+                !files.some(
+                  (currentFile) =>
+                    currentFile.file.name === candidate.name &&
+                    currentFile.file.size === candidate.size &&
+                    currentFile.file.lastModified === candidate.lastModified
+                )
+            )
+            .map((candidate) => ({
+              clientFileId: crypto.randomUUID(),
+              file: candidate,
+            })),
         ]
-      : candidateFiles;
+      : candidateFiles.map((candidate) => ({
+          clientFileId: crypto.randomUUID(),
+          file: candidate,
+        }));
 
     if (isPaid && nextFiles.length === files.length) {
       alert("Those files are already selected.");
@@ -620,7 +633,7 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
     setFileStatuses(
       Object.fromEntries(
         nextFiles.map((file) => [
-          fileIdentity(file),
+          file.clientFileId,
           { status: "queued" satisfies IngestStatus },
         ])
       )
@@ -649,18 +662,20 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
     setIngestFeedback(null);
     setFileStatuses(
       Object.fromEntries(
-        files.map((file) => [fileIdentity(file), { status: "queued" as IngestStatus }])
+        files.map((file) => [file.clientFileId, { status: "queued" as IngestStatus }])
       )
     );
 
     let pollingInterval: number | null = null;
     let stoppedPolling = false;
+    let latestStatusesByClientFileId = new Map<string, StudyMaterialIngestion>();
 
     try {
       const startedAfter = new Date().toISOString();
       const ingestFormData = new FormData();
       files.forEach((selectedFile) => {
-        ingestFormData.append("files", selectedFile);
+        ingestFormData.append("files", selectedFile.file);
+        ingestFormData.append("client_file_id", selectedFile.clientFileId);
       });
 
       const ingestRequest = fetch("/api/ingest-materials", {
@@ -672,7 +687,7 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
         const params = new URLSearchParams();
         params.set("startedAfter", startedAfter);
         files.forEach((file) => {
-          params.append("fileName", file.name);
+          params.append("clientFileId", file.clientFileId);
         });
 
         try {
@@ -685,15 +700,18 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
 
           if (!res.ok || !Array.isArray(data.ingestions)) return;
 
-          const latestByFileName = new Map(
-            data.ingestions.map((ingestion) => [ingestion.file_name, ingestion])
+          const latestByClientFileId = new Map(
+            data.ingestions
+              .filter((ingestion) => ingestion.client_file_id)
+              .map((ingestion) => [ingestion.client_file_id as string, ingestion])
           );
+          latestStatusesByClientFileId = latestByClientFileId;
 
           setFileStatuses((current) =>
             Object.fromEntries(
               files.map((file) => {
-                const key = fileIdentity(file);
-                const ingestion = latestByFileName.get(file.name);
+                const key = file.clientFileId;
+                const ingestion = latestByClientFileId.get(file.clientFileId);
                 return [
                   key,
                   ingestion
@@ -741,7 +759,7 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
         setFileStatuses((current) =>
           Object.fromEntries(
             files.map((file) => {
-              const key = fileIdentity(file);
+              const key = file.clientFileId;
               return [
                 key,
                 {
@@ -768,37 +786,19 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
         console.warn("Ingestion completed with file errors:", ingestData.fileErrors);
       }
 
-      const readyNames = new Set(ingestedMaterials.map((material) => material.file_name));
-      const fileErrorByName = new Map(
-        (ingestData.fileErrors ?? [])
-          .filter((error) => typeof error.fileName === "string" && error.fileName)
-          .map((error) => [error.fileName as string, error.message || "Import failed."])
-      );
-
       setFileStatuses((current) =>
         Object.fromEntries(
           files.map((file) => {
-            const key = fileIdentity(file);
-            const errorMessage = fileErrorByName.get(file.name);
+            const key = file.clientFileId;
+            const latestStatus = latestStatusesByClientFileId.get(file.clientFileId);
 
-            if (errorMessage) {
+            if (latestStatus) {
               return [
                 key,
                 {
                   ...(current[key] ?? { status: "queued" as IngestStatus }),
-                  status: "failed" as IngestStatus,
-                  errorMessage,
-                },
-              ];
-            }
-
-            if (readyNames.has(file.name)) {
-              return [
-                key,
-                {
-                  ...(current[key] ?? { status: "queued" as IngestStatus }),
-                  status: "ready" as IngestStatus,
-                  errorMessage: undefined,
+                  status: latestStatus.status,
+                  errorMessage: latestStatus.error_message ?? undefined,
                 },
               ];
             }
@@ -871,7 +871,7 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
     );
     setFileStatuses((currentStatuses) => {
       const nextStatuses = { ...currentStatuses };
-      delete nextStatuses[fileIdentity(removedFile)];
+      delete nextStatuses[removedFile.clientFileId];
       return nextStatuses;
     });
   }
@@ -1534,18 +1534,18 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
           <ul className="mt-3 space-y-2">
             {files.map((selectedFile, index) => {
               const statusEntry =
-                fileStatuses[fileIdentity(selectedFile)] ??
+                fileStatuses[selectedFile.clientFileId] ??
                 ({ status: "queued" } as LocalFileStatus);
 
               return (
                 <li
-                  key={`${selectedFile.name}-${selectedFile.size}-${index}`}
+                  key={selectedFile.clientFileId}
                   className="flex items-center justify-between gap-3 rounded bg-gray-800 px-3 py-2"
                 >
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
                       <p className="truncate text-sm text-gray-200">
-                        {selectedFile.name}
+                        {selectedFile.file.name}
                       </p>
                       <span
                         className={`shrink-0 rounded-full px-2 py-1 text-[11px] font-semibold ${ingestStatusClasses(
@@ -1556,7 +1556,7 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
                       </span>
                     </div>
                     <p className="text-xs text-gray-400">
-                      {(selectedFile.size / 1024 / 1024).toFixed(2)} MB
+                      {(selectedFile.file.size / 1024 / 1024).toFixed(2)} MB
                     </p>
                     {statusEntry.errorMessage ? (
                       <p className="mt-1 text-xs text-red-300">

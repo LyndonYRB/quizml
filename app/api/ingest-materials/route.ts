@@ -50,12 +50,9 @@ type StoredMaterialCleanupTarget = {
 
 type StudyMaterialIngestionRow = {
   id: string;
+  client_file_id: string | null;
   file_name: string;
 };
-
-function fileIdentity(file: File) {
-  return `${file.name}:${file.size}:${file.lastModified}`;
-}
 
 async function cleanupMaterial({
   supabaseAdmin,
@@ -107,20 +104,23 @@ async function cleanupBatchMaterials({
 async function createIngestionRecord({
   supabaseAdmin,
   userId,
+  clientFileId,
   fileName,
 }: {
   supabaseAdmin: ReturnType<typeof createServiceRoleClient>;
   userId: string;
+  clientFileId: string | null;
   fileName: string;
 }) {
   const { data, error } = await supabaseAdmin
     .from("study_material_ingestions")
     .insert({
       user_id: userId,
+      client_file_id: clientFileId,
       file_name: fileName,
       status: "queued",
     })
-    .select("id, file_name")
+    .select("id, client_file_id, file_name")
     .single<StudyMaterialIngestionRow>();
 
   if (error || !data) {
@@ -236,6 +236,7 @@ export async function POST(request: NextRequest) {
     }
 
     const files = uploadedFiles as File[];
+    const clientFileIds = formData.getAll("client_file_id");
     const maxSize = isPaid ? MAX_PDF_BYTES_PAID : MAX_PDF_BYTES_FREE;
 
     const oversizedFile = files.find((file) => file.size > maxSize);
@@ -260,21 +261,38 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (clientFileIds.length > 0 && clientFileIds.length !== files.length) {
+      return NextResponse.json(
+        { error: "Each uploaded file must include a matching client file id." },
+        { status: 400 }
+      );
+    }
+
     const savedMaterials: SavedMaterial[] = [];
     const chunkCounts: Record<string, number> = {};
     const fileErrors: FileIngestError[] = [];
     const studyMaterialsBucket = getStudyMaterialsBucket();
     const cleanupTargets: StoredMaterialCleanupTarget[] = [];
-    const ingestionByFileKey = new Map<string, StudyMaterialIngestionRow>();
+    const ingestionsByClientFileId = new Map<string, StudyMaterialIngestionRow>();
+    const ingestionOrder: StudyMaterialIngestionRow[] = [];
 
-    for (const file of files) {
+    for (const [index, file] of files.entries()) {
+      const clientFileIdValue = clientFileIds[index];
+      const clientFileId =
+        typeof clientFileIdValue === "string" && clientFileIdValue.trim()
+          ? clientFileIdValue.trim()
+          : null;
       try {
         const ingestion = await createIngestionRecord({
           supabaseAdmin,
           userId,
+          clientFileId,
           fileName: file.name,
         });
-        ingestionByFileKey.set(fileIdentity(file), ingestion);
+        ingestionOrder.push(ingestion);
+        if (ingestion.client_file_id) {
+          ingestionsByClientFileId.set(ingestion.client_file_id, ingestion);
+        }
       } catch (error) {
         const message =
           error instanceof Error
@@ -286,7 +304,7 @@ export async function POST(request: NextRequest) {
         });
         await failIngestionBatch({
           supabaseAdmin,
-          ingestionRecords: Array.from(ingestionByFileKey.values()),
+          ingestionRecords: ingestionOrder,
           currentMessage: message,
         });
         return NextResponse.json(
@@ -301,8 +319,15 @@ export async function POST(request: NextRequest) {
 
     const { extractText } = await import("unpdf");
 
-    for (const file of files) {
-      const ingestion = ingestionByFileKey.get(fileIdentity(file));
+    for (const [index, file] of files.entries()) {
+      const clientFileIdValue = clientFileIds[index];
+      const clientFileId =
+        typeof clientFileIdValue === "string" && clientFileIdValue.trim()
+          ? clientFileIdValue.trim()
+          : null;
+      const ingestion = clientFileId
+        ? ingestionsByClientFileId.get(clientFileId)
+        : ingestionOrder[index];
 
       if (!ingestion) {
         return NextResponse.json(
@@ -340,7 +365,7 @@ export async function POST(request: NextRequest) {
         });
         await failIngestionBatch({
           supabaseAdmin,
-          ingestionRecords: Array.from(ingestionByFileKey.values()),
+          ingestionRecords: ingestionOrder,
           currentIngestionId: ingestion.id,
           currentMessage: message,
         });
@@ -395,7 +420,7 @@ export async function POST(request: NextRequest) {
         });
         await failIngestionBatch({
           supabaseAdmin,
-          ingestionRecords: Array.from(ingestionByFileKey.values()),
+          ingestionRecords: ingestionOrder,
           currentIngestionId: ingestion.id,
           currentMessage: `Could not upload ${file.name} to storage: ${message}`,
         });
@@ -532,7 +557,7 @@ export async function POST(request: NextRequest) {
         });
         await failIngestionBatch({
           supabaseAdmin,
-          ingestionRecords: Array.from(ingestionByFileKey.values()),
+          ingestionRecords: ingestionOrder,
           currentIngestionId: ingestion.id,
           currentMessage: `Could not save ${file.name} after upload: ${message}`,
         });
@@ -601,7 +626,7 @@ export async function POST(request: NextRequest) {
         });
         await failIngestionBatch({
           supabaseAdmin,
-          ingestionRecords: Array.from(ingestionByFileKey.values()),
+          ingestionRecords: ingestionOrder,
           currentIngestionId: ingestion.id,
           currentMessage: `Could not save chunks for ${file.name}: ${message}`,
         });
@@ -636,7 +661,7 @@ export async function POST(request: NextRequest) {
         });
         await failIngestionBatch({
           supabaseAdmin,
-          ingestionRecords: Array.from(ingestionByFileKey.values()),
+          ingestionRecords: ingestionOrder,
           currentIngestionId: ingestion.id,
           currentMessage:
             verifyErr?.message || `Chunk verification failed for ${file.name}.`,

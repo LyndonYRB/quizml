@@ -165,6 +165,7 @@ create index if not exists study_materials_user_created_at_idx
 create table if not exists public.study_material_ingestions (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
+  client_file_id text,
   file_name text not null,
   status text not null check (
     status in ('queued', 'uploading', 'extracting', 'saving', 'chunking', 'ready', 'failed')
@@ -180,6 +181,9 @@ create index if not exists study_material_ingestions_user_created_at_idx
 
 create index if not exists study_material_ingestions_user_file_created_at_idx
   on public.study_material_ingestions (user_id, file_name, created_at desc);
+
+create index if not exists study_material_ingestions_user_client_file_created_at_idx
+  on public.study_material_ingestions (user_id, client_file_id, created_at desc);
 
 create table if not exists public.study_material_chunks (
   id uuid primary key default gen_random_uuid(),
