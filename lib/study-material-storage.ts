@@ -41,13 +41,26 @@ export async function uploadStudyMaterialFile({
   path,
   body,
   contentType,
+  fileSize,
 }: {
   supabase: SupabaseClient;
   bucket: string;
   path: string;
-  body: ArrayBuffer | Uint8Array;
+  body: Buffer;
   contentType?: string;
+  fileSize?: number;
 }) {
+  console.log("study-material storage upload starting:", {
+    bucket,
+    path,
+    fileSize: fileSize ?? null,
+    bufferByteLength: body.byteLength,
+  });
+
+  if (body.byteLength <= 0) {
+    throw new Error("Upload buffer is empty.");
+  }
+
   const { data, error } = await supabase.storage.from(bucket).upload(path, body, {
     upsert: false,
     contentType: contentType || "application/pdf",
