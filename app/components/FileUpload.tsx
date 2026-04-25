@@ -103,10 +103,40 @@ interface IngestMaterialsResponse {
   message?: string;
 }
 
+interface StudyMaterialIngestion {
+  id: string;
+  file_name: string;
+  status: IngestStatus;
+  error_message?: string | null;
+  study_material_id?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface StudyMaterialIngestionsResponse {
+  success?: boolean;
+  ingestions?: StudyMaterialIngestion[];
+  error?: string;
+}
+
 type IngestFeedback = {
   type: "success" | "partial" | "error";
   message: string;
   details?: string[];
+};
+
+type IngestStatus =
+  | "queued"
+  | "uploading"
+  | "extracting"
+  | "saving"
+  | "chunking"
+  | "ready"
+  | "failed";
+
+type LocalFileStatus = {
+  status: IngestStatus;
+  errorMessage?: string;
 };
 
 
@@ -241,6 +271,38 @@ function fileIdentity(file: File) {
   return `${file.name}:${file.size}:${file.lastModified}`;
 }
 
+function ingestStatusLabel(status: IngestStatus) {
+  switch (status) {
+    case "queued":
+      return "Queued";
+    case "uploading":
+      return "Uploading";
+    case "extracting":
+      return "Extracting text";
+    case "saving":
+      return "Saving material";
+    case "chunking":
+      return "Creating chunks";
+    case "ready":
+      return "Ready";
+    case "failed":
+      return "Failed";
+  }
+}
+
+function ingestStatusClasses(status: IngestStatus) {
+  switch (status) {
+    case "ready":
+      return "bg-emerald-500/15 text-emerald-200";
+    case "failed":
+      return "bg-red-500/15 text-red-200";
+    case "queued":
+      return "bg-gray-600/40 text-gray-200";
+    default:
+      return "bg-blue-500/15 text-blue-200";
+  }
+}
+
 function materialsSignature(materialIds: string[]) {
   return [...materialIds].sort().join("|");
 }
@@ -344,6 +406,7 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
   const [uploading, setUploading] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState("");
   const [ingestFeedback, setIngestFeedback] = useState<IngestFeedback | null>(null);
+  const [fileStatuses, setFileStatuses] = useState<Record<string, LocalFileStatus>>({});
 
   /* ---------------------------------------------------------
      STATE: Daily usage (client display only)
@@ -554,6 +617,14 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
     }
 
     setFiles(nextFiles);
+    setFileStatuses(
+      Object.fromEntries(
+        nextFiles.map((file) => [
+          fileIdentity(file),
+          { status: "queued" satisfies IngestStatus },
+        ])
+      )
+    );
     setLessons([]);
     setFinalTest([]);
     setLessonRunId(null);
@@ -574,19 +645,86 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
     }
 
     setUploading(true);
-    setLoadingMsg("Extracting text from your PDFs...");
+    setLoadingMsg("Processing your PDFs...");
     setIngestFeedback(null);
+    setFileStatuses(
+      Object.fromEntries(
+        files.map((file) => [fileIdentity(file), { status: "queued" as IngestStatus }])
+      )
+    );
+
+    let pollingInterval: number | null = null;
+    let stoppedPolling = false;
 
     try {
+      const startedAfter = new Date().toISOString();
       const ingestFormData = new FormData();
       files.forEach((selectedFile) => {
         ingestFormData.append("files", selectedFile);
       });
 
-      const ingestResponse = await fetch("/api/ingest-materials", {
+      const ingestRequest = fetch("/api/ingest-materials", {
         method: "POST",
         body: ingestFormData,
       });
+
+      const pollIngestionStatuses = async () => {
+        const params = new URLSearchParams();
+        params.set("startedAfter", startedAfter);
+        files.forEach((file) => {
+          params.append("fileName", file.name);
+        });
+
+        try {
+          const res = await fetch(`/api/study-material-ingestions?${params.toString()}`, {
+            method: "GET",
+          });
+          const data = (await res
+            .json()
+            .catch(() => ({}))) as StudyMaterialIngestionsResponse;
+
+          if (!res.ok || !Array.isArray(data.ingestions)) return;
+
+          const latestByFileName = new Map(
+            data.ingestions.map((ingestion) => [ingestion.file_name, ingestion])
+          );
+
+          setFileStatuses((current) =>
+            Object.fromEntries(
+              files.map((file) => {
+                const key = fileIdentity(file);
+                const ingestion = latestByFileName.get(file.name);
+                return [
+                  key,
+                  ingestion
+                    ? {
+                        status: ingestion.status,
+                        errorMessage: ingestion.error_message ?? undefined,
+                      }
+                    : current[key] ?? { status: "queued" as IngestStatus },
+                ];
+              })
+            )
+          );
+        } catch {
+          // Silent fail while the main request is in flight.
+        }
+      };
+
+      await pollIngestionStatuses();
+      pollingInterval = window.setInterval(() => {
+        if (!stoppedPolling) {
+          void pollIngestionStatuses();
+        }
+      }, 1000);
+
+      const ingestResponse = await ingestRequest;
+      stoppedPolling = true;
+      if (pollingInterval !== null) {
+        window.clearInterval(pollingInterval);
+      }
+      await pollIngestionStatuses();
+
       const ingestData = (await ingestResponse
         .json()
         .catch(() => ({}))) as IngestMaterialsResponse;
@@ -595,21 +733,32 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
         : [];
 
       if (!ingestResponse.ok || !ingestData.success || ingestedMaterials.length === 0) {
+        const failureMessage =
+          ingestData.message ||
+          ingestData.error ||
+          "Failed to ingest study material.";
         console.error("Ingestion failed:", ingestData);
+        setFileStatuses((current) =>
+          Object.fromEntries(
+            files.map((file) => {
+              const key = fileIdentity(file);
+              return [
+                key,
+                {
+                  ...(current[key] ?? { status: "queued" as IngestStatus }),
+                  status: "failed" as IngestStatus,
+                  errorMessage: failureMessage,
+                },
+              ];
+            })
+          )
+        );
         setIngestFeedback({
           type: "error",
           message: "No files were imported.",
-          details: [
-            ingestData.message ||
-              ingestData.error ||
-              "Failed to ingest study material.",
-          ],
+          details: [failureMessage],
         });
-        alert(
-          ingestData.message ||
-            ingestData.error ||
-            "Failed to ingest study material."
-        );
+        alert(failureMessage);
         return;
       }
 
@@ -618,6 +767,53 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
       if (ingestData.fileErrors?.length) {
         console.warn("Ingestion completed with file errors:", ingestData.fileErrors);
       }
+
+      const readyNames = new Set(ingestedMaterials.map((material) => material.file_name));
+      const fileErrorByName = new Map(
+        (ingestData.fileErrors ?? [])
+          .filter((error) => typeof error.fileName === "string" && error.fileName)
+          .map((error) => [error.fileName as string, error.message || "Import failed."])
+      );
+
+      setFileStatuses((current) =>
+        Object.fromEntries(
+          files.map((file) => {
+            const key = fileIdentity(file);
+            const errorMessage = fileErrorByName.get(file.name);
+
+            if (errorMessage) {
+              return [
+                key,
+                {
+                  ...(current[key] ?? { status: "queued" as IngestStatus }),
+                  status: "failed" as IngestStatus,
+                  errorMessage,
+                },
+              ];
+            }
+
+            if (readyNames.has(file.name)) {
+              return [
+                key,
+                {
+                  ...(current[key] ?? { status: "queued" as IngestStatus }),
+                  status: "ready" as IngestStatus,
+                  errorMessage: undefined,
+                },
+              ];
+            }
+
+            return [
+              key,
+              {
+                ...(current[key] ?? { status: "queued" as IngestStatus }),
+                status: "failed" as IngestStatus,
+                errorMessage: "Import failed.",
+              },
+            ];
+          })
+        )
+      );
 
       const refreshedMaterials = await refreshStudyMaterials();
       const nextStudyMaterials =
@@ -644,6 +840,10 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
       });
       setShowFocusForm(true);
     } finally {
+      stoppedPolling = true;
+      if (typeof pollingInterval === "number") {
+        window.clearInterval(pollingInterval);
+      }
       setUploading(false);
       setLoadingMsg("");
     }
@@ -651,6 +851,7 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
 
   function clearFile() {
     setFiles([]);
+    setFileStatuses({});
     setLessons([]);
     setFinalTest([]);
     setLessonRunId(null);
@@ -662,9 +863,17 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
   }
 
   function removeFile(indexToRemove: number) {
+    const removedFile = files[indexToRemove];
+    if (!removedFile) return;
+
     setFiles((currentFiles) =>
       currentFiles.filter((_, index) => index !== indexToRemove)
     );
+    setFileStatuses((currentStatuses) => {
+      const nextStatuses = { ...currentStatuses };
+      delete nextStatuses[fileIdentity(removedFile)];
+      return nextStatuses;
+    });
   }
 
   function toggleStudyMaterial(materialId: string) {
@@ -1323,27 +1532,47 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
           </div>
 
           <ul className="mt-3 space-y-2">
-            {files.map((selectedFile, index) => (
-              <li
-                key={`${selectedFile.name}-${selectedFile.size}-${index}`}
-                className="flex items-center justify-between gap-3 rounded bg-gray-800 px-3 py-2"
-              >
-                <div className="min-w-0">
-                  <p className="truncate text-sm text-gray-200">
-                    {selectedFile.name}
-                  </p>
-                  <p className="text-xs text-gray-400">
-                    {(selectedFile.size / 1024 / 1024).toFixed(2)} MB
-                  </p>
-                </div>
-                <button
-                  onClick={() => removeFile(index)}
-                  className="shrink-0 text-sm text-red-400 hover:text-red-300 transition"
+            {files.map((selectedFile, index) => {
+              const statusEntry =
+                fileStatuses[fileIdentity(selectedFile)] ??
+                ({ status: "queued" } as LocalFileStatus);
+
+              return (
+                <li
+                  key={`${selectedFile.name}-${selectedFile.size}-${index}`}
+                  className="flex items-center justify-between gap-3 rounded bg-gray-800 px-3 py-2"
                 >
-                  Remove
-                </button>
-              </li>
-            ))}
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="truncate text-sm text-gray-200">
+                        {selectedFile.name}
+                      </p>
+                      <span
+                        className={`shrink-0 rounded-full px-2 py-1 text-[11px] font-semibold ${ingestStatusClasses(
+                          statusEntry.status
+                        )}`}
+                      >
+                        {ingestStatusLabel(statusEntry.status)}
+                      </span>
+                    </div>
+                    <p className="text-xs text-gray-400">
+                      {(selectedFile.size / 1024 / 1024).toFixed(2)} MB
+                    </p>
+                    {statusEntry.errorMessage ? (
+                      <p className="mt-1 text-xs text-red-300">
+                        {statusEntry.errorMessage}
+                      </p>
+                    ) : null}
+                  </div>
+                  <button
+                    onClick={() => removeFile(index)}
+                    className="shrink-0 text-sm text-red-400 hover:text-red-300 transition"
+                  >
+                    Remove
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}

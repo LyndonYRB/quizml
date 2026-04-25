@@ -19,6 +19,16 @@ import {
 const MAX_PDF_BYTES_FREE = 10 * 1024 * 1024;
 const MAX_PDF_BYTES_PAID = 50 * 1024 * 1024;
 const MIN_EXTRACTED_CHARS = 100;
+
+type IngestionStatus =
+  | "queued"
+  | "uploading"
+  | "extracting"
+  | "saving"
+  | "chunking"
+  | "ready"
+  | "failed";
+
 type SavedMaterial = {
   id: string;
   file_name: string;
@@ -37,6 +47,15 @@ type StoredMaterialCleanupTarget = {
   fileName: string;
   storedFileUrl: string;
 };
+
+type StudyMaterialIngestionRow = {
+  id: string;
+  file_name: string;
+};
+
+function fileIdentity(file: File) {
+  return `${file.name}:${file.size}:${file.lastModified}`;
+}
 
 async function cleanupMaterial({
   supabaseAdmin,
@@ -81,6 +100,99 @@ async function cleanupBatchMaterials({
       materialId: material.materialId,
       fileName: material.fileName,
       storedFileUrl: material.storedFileUrl,
+    });
+  }
+}
+
+async function createIngestionRecord({
+  supabaseAdmin,
+  userId,
+  fileName,
+}: {
+  supabaseAdmin: ReturnType<typeof createServiceRoleClient>;
+  userId: string;
+  fileName: string;
+}) {
+  const { data, error } = await supabaseAdmin
+    .from("study_material_ingestions")
+    .insert({
+      user_id: userId,
+      file_name: fileName,
+      status: "queued",
+    })
+    .select("id, file_name")
+    .single<StudyMaterialIngestionRow>();
+
+  if (error || !data) {
+    throw new Error(error?.message || `Failed to create ingestion record for ${fileName}.`);
+  }
+
+  return data;
+}
+
+async function updateIngestionStatus({
+  supabaseAdmin,
+  ingestionId,
+  status,
+  errorMessage,
+  studyMaterialId,
+}: {
+  supabaseAdmin: ReturnType<typeof createServiceRoleClient>;
+  ingestionId: string;
+  status: IngestionStatus;
+  errorMessage?: string | null;
+  studyMaterialId?: string | null;
+}) {
+  const updates: {
+    status: IngestionStatus;
+    error_message?: string | null;
+    study_material_id?: string | null;
+  } = {
+    status,
+  };
+
+  if (errorMessage !== undefined) {
+    updates.error_message = errorMessage;
+  }
+
+  if (studyMaterialId !== undefined) {
+    updates.study_material_id = studyMaterialId;
+  }
+
+  const { error } = await supabaseAdmin
+    .from("study_material_ingestions")
+    .update(updates)
+    .eq("id", ingestionId);
+
+  if (error) {
+    console.error("ingest-materials ingestion status update failed:", {
+      ingestionId,
+      status,
+      message: error.message,
+    });
+  }
+}
+
+async function failIngestionBatch({
+  supabaseAdmin,
+  ingestionRecords,
+  currentIngestionId,
+  currentMessage,
+}: {
+  supabaseAdmin: ReturnType<typeof createServiceRoleClient>;
+  ingestionRecords: StudyMaterialIngestionRow[];
+  currentIngestionId?: string;
+  currentMessage: string;
+}) {
+  for (const ingestion of ingestionRecords) {
+    await updateIngestionStatus({
+      supabaseAdmin,
+      ingestionId: ingestion.id,
+      status: "failed",
+      errorMessage:
+        ingestion.id === currentIngestionId
+          ? currentMessage
+          : "Rolled back because this ingestion request did not complete.",
     });
   }
 }
@@ -148,16 +260,61 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { extractText } = await import("unpdf");
     const savedMaterials: SavedMaterial[] = [];
     const chunkCounts: Record<string, number> = {};
     const fileErrors: FileIngestError[] = [];
     const studyMaterialsBucket = getStudyMaterialsBucket();
     const cleanupTargets: StoredMaterialCleanupTarget[] = [];
+    const ingestionByFileKey = new Map<string, StudyMaterialIngestionRow>();
 
     for (const file of files) {
-      let text = "";
-      let fileBuffer: Buffer | null = null;
+      try {
+        const ingestion = await createIngestionRecord({
+          supabaseAdmin,
+          userId,
+          fileName: file.name,
+        });
+        ingestionByFileKey.set(fileIdentity(file), ingestion);
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : `Failed to create ingestion record for ${file.name}.`;
+        console.error("ingest-materials ingestion record create failed:", {
+          fileName: file.name,
+          message,
+        });
+        await failIngestionBatch({
+          supabaseAdmin,
+          ingestionRecords: Array.from(ingestionByFileKey.values()),
+          currentMessage: message,
+        });
+        return NextResponse.json(
+          {
+            success: false,
+            error: message,
+          },
+          { status: 500 }
+        );
+      }
+    }
+
+    const { extractText } = await import("unpdf");
+
+    for (const file of files) {
+      const ingestion = ingestionByFileKey.get(fileIdentity(file));
+
+      if (!ingestion) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: `Missing ingestion record for ${file.name}.`,
+          },
+          { status: 500 }
+        );
+      }
+
+      let fileBuffer: Buffer;
       try {
         const arrayBuffer = await file.arrayBuffer();
         fileBuffer = Buffer.from(arrayBuffer);
@@ -171,82 +328,29 @@ export async function POST(request: NextRequest) {
           fileSize: file.size,
           bufferByteLength: fileBuffer.byteLength,
         });
-
-        const extracted = await extractText(new Uint8Array(fileBuffer), {
-          mergePages: true,
-        });
-        text = extracted.text ?? "";
       } catch (error) {
-        if (error instanceof Error && error.message === "Uploaded PDF is empty.") {
-          console.error("ingest-materials empty upload buffer:", {
-            fileName: file.name,
-            fileSize: file.size,
-            bufferByteLength: fileBuffer?.byteLength ?? 0,
-          });
-          return NextResponse.json(
-            {
-              success: false,
-              error: `${file.name} is empty and could not be uploaded.`,
-            },
-            { status: 400 }
-          );
-        }
-
-        console.error("ingest-materials text extraction failed:", {
+        const message =
+          error instanceof Error && error.message === "Uploaded PDF is empty."
+            ? `${file.name} is empty and could not be uploaded.`
+            : `Could not prepare ${file.name} for upload.`;
+        console.error("ingest-materials file buffer failed:", {
           fileName: file.name,
           fileSize: file.size,
-          message: error instanceof Error ? error.message : "Unknown error",
+          message,
         });
-        fileErrors.push({
-          fileName: file.name,
-          stage: "text_extraction",
-          message: `Could not read text from ${file.name}.`,
+        await failIngestionBatch({
+          supabaseAdmin,
+          ingestionRecords: Array.from(ingestionByFileKey.values()),
+          currentIngestionId: ingestion.id,
+          currentMessage: message,
         });
-        console.warn("ingest-materials file failed:", {
-          fileName: file.name,
-          stage: "text_extraction",
-        });
-        continue;
-      }
-
-      console.log("ingest-materials text extracted:", {
-        fileName: file.name,
-        fileSize: file.size,
-        extractedTextLength: text.length,
-      });
-
-      if (!text || text.length < MIN_EXTRACTED_CHARS) {
-        fileErrors.push({
-          fileName: file.name,
-          stage: "text_extraction",
-          message: `Could not extract enough text from ${file.name}.`,
-        });
-        console.warn("ingest-materials file failed:", {
-          fileName: file.name,
-          stage: "text_extraction",
-          extractedTextLength: text.length,
-        });
-        continue;
-      }
-
-      const chunks = splitTextIntoChunks(text);
-      console.log("ingest-materials chunks created:", {
-        fileName: file.name,
-        chunkCount: chunks.length,
-      });
-
-      if (chunks.length === 0) {
-        fileErrors.push({
-          fileName: file.name,
-          stage: "chunking",
-          message: `Could not create usable chunks from ${file.name}.`,
-        });
-        console.warn("ingest-materials file failed:", {
-          fileName: file.name,
-          stage: "chunking",
-          chunkCount: chunks.length,
-        });
-        continue;
+        return NextResponse.json(
+          {
+            success: false,
+            error: message,
+          },
+          { status: error instanceof Error && error.message === "Uploaded PDF is empty." ? 400 : 500 }
+        );
       }
 
       const materialId = crypto.randomUUID();
@@ -260,21 +364,14 @@ export async function POST(request: NextRequest) {
         storagePath
       );
 
-      if (!fileBuffer) {
-        console.error("ingest-materials missing upload buffer after read:", {
-          fileName: file.name,
-          fileSize: file.size,
-        });
-        return NextResponse.json(
-          {
-            success: false,
-            error: `Could not prepare ${file.name} for upload.`,
-          },
-          { status: 500 }
-        );
-      }
-
       try {
+        await updateIngestionStatus({
+          supabaseAdmin,
+          ingestionId: ingestion.id,
+          status: "uploading",
+          errorMessage: null,
+        });
+
         await uploadStudyMaterialFile({
           supabase: supabaseAdmin,
           bucket: studyMaterialsBucket,
@@ -296,6 +393,12 @@ export async function POST(request: NextRequest) {
           supabaseAdmin,
           materials: cleanupTargets,
         });
+        await failIngestionBatch({
+          supabaseAdmin,
+          ingestionRecords: Array.from(ingestionByFileKey.values()),
+          currentIngestionId: ingestion.id,
+          currentMessage: `Could not upload ${file.name} to storage: ${message}`,
+        });
         return NextResponse.json(
           {
             success: false,
@@ -304,6 +407,100 @@ export async function POST(request: NextRequest) {
           { status: 500 }
         );
       }
+
+      await updateIngestionStatus({
+        supabaseAdmin,
+        ingestionId: ingestion.id,
+        status: "extracting",
+        errorMessage: null,
+      });
+
+      let text = "";
+      try {
+        const extracted = await extractText(new Uint8Array(fileBuffer), {
+          mergePages: true,
+        });
+        text = extracted.text ?? "";
+      } catch (error) {
+        console.error("ingest-materials text extraction failed:", {
+          fileName: file.name,
+          fileSize: file.size,
+          message: error instanceof Error ? error.message : "Unknown error",
+        });
+        await deleteStoredStudyMaterialFile({
+          supabase: supabaseAdmin,
+          storedFileUrl,
+        });
+        await updateIngestionStatus({
+          supabaseAdmin,
+          ingestionId: ingestion.id,
+          status: "failed",
+          errorMessage: `Could not read text from ${file.name}.`,
+        });
+        fileErrors.push({
+          fileName: file.name,
+          stage: "text_extraction",
+          message: `Could not read text from ${file.name}.`,
+        });
+        continue;
+      }
+
+      console.log("ingest-materials text extracted:", {
+        fileName: file.name,
+        fileSize: file.size,
+        extractedTextLength: text.length,
+      });
+
+      if (!text || text.length < MIN_EXTRACTED_CHARS) {
+        await deleteStoredStudyMaterialFile({
+          supabase: supabaseAdmin,
+          storedFileUrl,
+        });
+        await updateIngestionStatus({
+          supabaseAdmin,
+          ingestionId: ingestion.id,
+          status: "failed",
+          errorMessage: `Could not extract enough text from ${file.name}.`,
+        });
+        fileErrors.push({
+          fileName: file.name,
+          stage: "text_extraction",
+          message: `Could not extract enough text from ${file.name}.`,
+        });
+        continue;
+      }
+
+      const chunks = splitTextIntoChunks(text);
+      console.log("ingest-materials chunks created:", {
+        fileName: file.name,
+        chunkCount: chunks.length,
+      });
+
+      if (chunks.length === 0) {
+        await deleteStoredStudyMaterialFile({
+          supabase: supabaseAdmin,
+          storedFileUrl,
+        });
+        await updateIngestionStatus({
+          supabaseAdmin,
+          ingestionId: ingestion.id,
+          status: "failed",
+          errorMessage: `Could not create usable chunks from ${file.name}.`,
+        });
+        fileErrors.push({
+          fileName: file.name,
+          stage: "chunking",
+          message: `Could not create usable chunks from ${file.name}.`,
+        });
+        continue;
+      }
+
+      await updateIngestionStatus({
+        supabaseAdmin,
+        ingestionId: ingestion.id,
+        status: "saving",
+        errorMessage: null,
+      });
 
       const { data: material, error: materialErr } = await supabaseAdmin
         .from("study_materials")
@@ -333,6 +530,12 @@ export async function POST(request: NextRequest) {
           supabaseAdmin,
           materials: cleanupTargets,
         });
+        await failIngestionBatch({
+          supabaseAdmin,
+          ingestionRecords: Array.from(ingestionByFileKey.values()),
+          currentIngestionId: ingestion.id,
+          currentMessage: `Could not save ${file.name} after upload: ${message}`,
+        });
         return NextResponse.json(
           {
             success: false,
@@ -352,6 +555,14 @@ export async function POST(request: NextRequest) {
         userId,
         materialId: material.id,
         fileName: file.name,
+      });
+
+      await updateIngestionStatus({
+        supabaseAdmin,
+        ingestionId: ingestion.id,
+        status: "chunking",
+        errorMessage: null,
+        studyMaterialId: material.id,
       });
 
       const {
@@ -384,14 +595,15 @@ export async function POST(request: NextRequest) {
           materialId: material.id,
           message,
         });
-        console.warn("ingest-materials file failed:", {
-          fileName: file.name,
-          materialId: material.id,
-          stage: "chunk_insert",
-        });
         await cleanupBatchMaterials({
           supabaseAdmin,
           materials: cleanupTargets,
+        });
+        await failIngestionBatch({
+          supabaseAdmin,
+          ingestionRecords: Array.from(ingestionByFileKey.values()),
+          currentIngestionId: ingestion.id,
+          currentMessage: `Could not save chunks for ${file.name}: ${message}`,
         });
         return NextResponse.json(
           {
@@ -418,32 +630,34 @@ export async function POST(request: NextRequest) {
           code: verifyErr?.code,
           details: verifyErr?.details,
         });
-        fileErrors.push({
-          fileName: file.name,
-          stage: "chunk_verify",
-          message:
-            verifyErr?.message ||
-            `Expected ${chunks.length} chunks but found ${persistedChunkCount ?? 0}.`,
-        });
-        console.warn("ingest-materials file failed:", {
-          fileName: file.name,
-          materialId: material.id,
-          stage: "chunk_verify",
-        });
         await cleanupBatchMaterials({
           supabaseAdmin,
           materials: cleanupTargets,
+        });
+        await failIngestionBatch({
+          supabaseAdmin,
+          ingestionRecords: Array.from(ingestionByFileKey.values()),
+          currentIngestionId: ingestion.id,
+          currentMessage:
+            verifyErr?.message || `Chunk verification failed for ${file.name}.`,
         });
         return NextResponse.json(
           {
             success: false,
             error:
-              verifyErr?.message ||
-              `Chunk verification failed for ${file.name}.`,
+              verifyErr?.message || `Chunk verification failed for ${file.name}.`,
           },
           { status: 500 }
         );
       }
+
+      await updateIngestionStatus({
+        supabaseAdmin,
+        ingestionId: ingestion.id,
+        status: "ready",
+        errorMessage: null,
+        studyMaterialId: material.id,
+      });
 
       savedMaterials.push(material);
       chunkCounts[material.id] = chunks.length;

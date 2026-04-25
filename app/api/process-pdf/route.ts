@@ -166,7 +166,7 @@ export async function POST(request: NextRequest) {
 
     for (const file of files) {
       let text = "";
-      let fileBuffer: Buffer | null = null;
+      let fileBuffer: Buffer;
       try {
         const arrayBuffer = await file.arrayBuffer();
         fileBuffer = Buffer.from(arrayBuffer);
@@ -227,13 +227,6 @@ export async function POST(request: NextRequest) {
         studyMaterialsBucket,
         storagePath
       );
-
-      if (!fileBuffer) {
-        return NextResponse.json(
-          { error: `Could not prepare ${file.name} for upload.` },
-          { status: 500 }
-        );
-      }
 
       try {
         await uploadStudyMaterialFile({
