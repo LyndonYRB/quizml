@@ -409,6 +409,7 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
   const [loadingMsg, setLoadingMsg] = useState("");
   const [ingestFeedback, setIngestFeedback] = useState<IngestFeedback | null>(null);
   const [fileStatuses, setFileStatuses] = useState<Record<string, LocalFileStatus>>({});
+  const [deletingMaterialId, setDeletingMaterialId] = useState<string | null>(null);
 
   /* ---------------------------------------------------------
      STATE: Daily usage (client display only)
@@ -901,6 +902,49 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
     }
 
     return materialsData.studyMaterials ?? [];
+  }
+
+  async function handleDeleteStudyMaterial(material: StudyMaterial) {
+    const confirmed = window.confirm(
+      `Delete "${material.file_name}" from your saved study materials?`
+    );
+
+    if (!confirmed) return;
+
+    setDeletingMaterialId(material.id);
+
+    try {
+      const res = await fetch("/api/study-materials", {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ materialId: material.id }),
+      });
+
+      const data = (await res.json().catch(() => ({}))) as {
+        success?: boolean;
+        error?: string;
+      };
+
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Failed to delete study material.");
+      }
+
+      const refreshedMaterials = await refreshStudyMaterials();
+      setStudyMaterials(refreshedMaterials);
+      setSelectedStudyMaterialIds((currentIds) =>
+        currentIds.filter((id) => id !== material.id)
+      );
+    } catch (error) {
+      alert(
+        error instanceof Error
+          ? error.message
+          : "Failed to delete study material."
+      );
+    } finally {
+      setDeletingMaterialId(null);
+    }
   }
 
   function handleStartReview() {
@@ -1465,20 +1509,29 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
                     </span>
                   </span>
                 </label>
-                {canOpenStudyMaterial(material) ? (
-                  <a
-                    href={material.open_url ?? undefined}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="shrink-0 text-sm font-semibold text-blue-400 hover:text-blue-300"
+                <div className="flex shrink-0 items-center gap-3">
+                  {canOpenStudyMaterial(material) ? (
+                    <a
+                      href={material.open_url ?? undefined}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-sm font-semibold text-blue-400 hover:text-blue-300"
+                    >
+                      Open
+                    </a>
+                  ) : (
+                    <span className="text-sm font-semibold text-gray-500">
+                      File unavailable
+                    </span>
+                  )}
+                  <button
+                    onClick={() => void handleDeleteStudyMaterial(material)}
+                    disabled={deletingMaterialId === material.id}
+                    className="text-sm font-semibold text-red-400 transition hover:text-red-300 disabled:cursor-not-allowed disabled:text-red-400/50"
                   >
-                    Open
-                  </a>
-                ) : (
-                  <span className="shrink-0 text-sm font-semibold text-gray-500">
-                    File unavailable
-                  </span>
-                )}
+                    {deletingMaterialId === material.id ? "Deleting..." : "Delete"}
+                  </button>
+                </div>
               </li>
             ))}
           </ul>
