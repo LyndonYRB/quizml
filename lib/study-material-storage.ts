@@ -105,14 +105,29 @@ export async function downloadStoredStudyMaterialFile({
 }) {
   const location = parseStoredFileReference(storedFileUrl);
   if (!location) {
+    console.error("study-material storage download parse failed:", {
+      storedFileUrl,
+    });
     throw new Error("Stored file reference is missing or invalid.");
   }
+
+  console.log("study-material storage download starting:", {
+    storedFileUrl,
+    bucket: location.bucket,
+    path: location.path,
+  });
 
   const { data, error } = await supabase.storage
     .from(location.bucket)
     .download(location.path);
 
   if (error || !data) {
+    console.error("study-material storage download failed:", {
+      storedFileUrl,
+      bucket: location.bucket,
+      path: location.path,
+      message: error?.message,
+    });
     throw new Error(error?.message || "Failed to download stored study material.");
   }
 
@@ -142,6 +157,12 @@ function parseStoredFileReference(storedFileUrl?: string | null): StorageLocatio
   const bucket = withoutProtocol.slice(0, slashIndex);
   const path = withoutProtocol.slice(slashIndex + 1);
   if (!bucket || !path) return null;
+
+  console.log("study-material storage reference parsed:", {
+    storedFileUrl,
+    bucket,
+    path,
+  });
 
   return { bucket, path };
 }

@@ -176,6 +176,13 @@ export async function POST(request: NextRequest) {
             fileSize: file.size,
           });
 
+          console.log("ingest-materials storage upload completed:", {
+            bucket: studyMaterialsBucket,
+            storagePath,
+            storedFileUrl,
+            fileName: file.name,
+          });
+
           uploadedStorageTargets.push({
             fileName: file.name,
             storedFileUrl,

@@ -186,6 +186,26 @@ async function processSingleQueuedFile({
     materialId = file.materialId;
     storedFileUrl = file.storedFileUrl;
 
+    console.log("worker study material download preparing:", {
+      userId,
+      clientFileId: file.clientFileId,
+      fileName: file.fileName,
+      bucket: studyMaterialsBucket,
+      storagePath: file.storagePath,
+      storedFileUrl,
+    });
+
+    if (!storedFileUrl || !storedFileUrl.trim()) {
+      const message = `Stored file reference is missing for ${file.fileName}.`;
+      await updateIngestionStatus({
+        supabaseAdmin,
+        ingestionId: ingestion.id,
+        status: "failed",
+        errorMessage: message,
+      });
+      return;
+    }
+
     await updateIngestionStatus({
       supabaseAdmin,
       ingestionId: ingestion.id,
@@ -195,6 +215,7 @@ async function processSingleQueuedFile({
 
     const { buffer: fileBuffer } = await downloadStoredStudyMaterialFile({
       supabase: supabaseAdmin,
+      storedFileUrl,
     });
 
     await updateIngestionStatus({
