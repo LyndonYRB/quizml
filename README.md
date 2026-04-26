@@ -1,322 +1,237 @@
 # QuizML.ai
 
-**AI-powered microlearning from your study materials**
+AI-powered microlearning from your study materials.
 
-Live Demo: https://quizml-49chxx1n8-lyndonstluce-5610s-projects.vercel.app/
 Source Code: https://github.com/LyndonYRB/quizml
 
----
+## Project Overview
+QuizML is an AI learning SaaS that turns raw PDFs into structured lessons, quizzes, and remedial review loops. Instead of uploading notes and passively reading them, learners ingest their own materials, generate focused lesson sets, and work through a mastery-based flow that requires full understanding before moving on.
 
-Upload PDFs → Generate lessons → Test → Remediate → Achieve mastery.
+This project is built for students, certification candidates, and self-learners who already have content but need a more active study system. The core problem it solves is the gap between having study material and actually retaining it: most tools summarize content, but few enforce mastery against the learner's own documents.
 
----
+## Live Demo
+https://quizml.vercel.app
 
-## Overview
-
-QuizML.ai is an AI-driven learning platform that transforms raw study materials into structured, interactive micro-learning experiences.
-
-Instead of passively reading PDFs, users:
-
-* Upload study materials
-* Generate targeted lessons
-* Take mastery-based quizzes
-* Receive adaptive remedial learning
-* Must achieve **100% mastery** before progressing
-
-This enforces true understanding, not guesswork.
-
----
-
-## Key Features
-
-### Multi-PDF Ingestion
-
-* Upload one or multiple PDFs depending on plan
-* Extract and chunk study material for retrieval and reuse
-* Store indexed materials in Supabase
-
-### AI-Generated Micro-Lessons
-
-* Converts raw text into:
-  * Clear explanations
-  * Key points
-  * Exam-focused insights
-  * Common pitfalls
-
-### Mastery-Based Quizzing
-
-* 3-question quizzes per lesson
-* Must answer all correctly to proceed
-* Immediate feedback with explanations
-
-### Adaptive Remedial Learning
-
-* Incorrect answers trigger:
-  * Focused micro-lessons
-  * Targeted concept reinforcement
-* Then re-test until mastery
-
-### Final Mastery Test
-
-* 10-question final exam
-* No hints
-* Requires 10/10 to complete
-
-### Subscription System
-
-* Free vs Pro plan via Stripe
-* Pro unlocks:
-  * Multiple PDFs
-  * Unlimited generations
-  * Higher upload limits
-
----
-
-## Tech Stack
-
-**Frontend**
-
-* Next.js (App Router)
-* Tailwind CSS
-
-**Backend**
-
-* Next.js Route Handlers
-* Supabase server/client helpers
-
-**Database**
-
-* Supabase (PostgreSQL + pgvector)
-
-**AI**
-
-* OpenAI (lesson + quiz generation)
-* Embeddings for semantic chunking
-
-**Payments**
-
-* Stripe (subscriptions + billing portal)
-
-**Deployment**
-
-* Vercel
-
----
-
-## Demo Walkthrough
-
+## Screenshots
 ### 1. Upload Study Materials
-
 ![Upload](public/screenshots/quizml-01-upload.png)
 
-### 2. Ingestion Success
+### 2. Saved Materials
+![Saved Materials](public/screenshots/quizml-02-saved-materials.png)
 
-![Ingest](public/screenshots/quizml-02-saved-materials.png)
+### 3. Focus Prompt
+![Focus Prompt](public/screenshots/quizml-03-focus.png)
 
-### 3. Prompt Learning Focus
-
-![Prompt](public/screenshots/quizml-03-focus.png)
-
-### 4. AI Micro-Lesson Generated
-
+### 4. AI Lesson Output
 ![Lesson](public/screenshots/quizml-04-lesson.png)
 
-### 5. Mastery Quiz
-
+### 5. Quiz Flow
 ![Quiz](public/screenshots/quizml-05-quiz.png)
 
-### 6. Adaptive Remedial Learning
-
+### 6. Remedial Review
 ![Remedial](public/screenshots/quizml-06-remedial.png)
 
 ### 7. Final Mastery Test
-
 ![Final Test](public/screenshots/quizml-07-final-test.png)
 
-### 8. Course Completion (100% Mastery)
-
+### 8. Completion
 ![Completion](public/screenshots/quizml-08-score.png)
 
----
+## Tech Stack
+- Next.js 16 App Router
+- TypeScript
+- Tailwind CSS
+- Supabase Auth
+- Supabase Postgres
+- Supabase Storage
+- Stripe Billing
+- OpenAI API
+- Vercel
 
-## How It Works
+## Architecture
+High-level flow:
 
-1. **Upload PDFs**
+`User uploads PDFs -> ingest API creates queued ingestion records -> BullMQ job -> worker uploads to Supabase Storage -> study_materials row -> text extraction -> chunk creation -> AI lesson generation -> quiz/review experience`
 
-   * Files are sent to `/api/ingest-materials`
-   * Text is extracted and chunked
+Detailed flow:
 
-2. **Embedding + Storage**
+1. User uploads one or more PDFs from the web app.
+2. Files are sent to `/api/ingest-materials`.
+3. The API authenticates the user, creates `study_material_ingestions` rows, base64-encodes the uploaded files, and enqueues one BullMQ job.
+4. A separate worker process picks up the job from Redis.
+5. Each PDF is uploaded to Supabase Storage.
+6. A `study_materials` row is created for each successful file.
+7. Text is extracted server-side from the uploaded PDF.
+8. Extracted text is split into chunks and persisted in `study_material_chunks`.
+9. Lesson generation retrieves relevant chunks and asks OpenAI to produce structured lessons and quizzes.
+10. The learner moves through lessons, mastery quizzes, remedial review, and a final test.
 
-   * Each chunk is embedded
-   * Stored in `study_material_chunks`
+## Ingestion Pipeline
+QuizML uses a backend-backed ingestion status system plus a Redis-backed background worker instead of doing PDF processing inside the request itself.
 
-3. **Lesson Generation**
+Per-file statuses:
+- `queued`
+- `uploading`
+- `extracting`
+- `saving`
+- `chunking`
+- `ready`
+- `failed`
 
-   * User provides a focus prompt
-   * Relevant chunks are retrieved
-   * AI generates structured lessons
+Implementation notes:
+- `study_material_ingestions` stores the current ingestion state for each uploaded file.
+- `client_file_id` is generated in the frontend for each selected file and persisted with the ingestion row.
+- `client_file_id` prevents collisions when two uploaded files share the same filename.
+- The frontend polls `/api/study-material-ingestions` while ingestion is running.
+- Failed ingestions persist `error_message`, so the UI can show per-file failure feedback.
+- BullMQ + Redis handle job dispatch to the worker process.
 
-4. **Quiz + Feedback Loop**
+## Data Model
+Main tables used by the app:
 
-   * AI generates questions
-   * User must achieve mastery
-   * Remedial lessons triggered dynamically
+- `profiles`
+  Stores plan, paid status, Stripe customer/subscription ids, billing state, and subscription metadata.
+- `daily_usage`
+  Tracks daily lesson generation limits for free users.
+- `study_materials`
+  Stores saved PDFs and their storage-backed file references.
+- `study_material_ingestions`
+  Stores per-file ingestion lifecycle status and error information.
+- `study_material_chunks`
+  Stores chunked study content used for retrieval and lesson generation.
+- `lesson_runs`
+  Stores generated lesson sets, final test content, and run metadata.
+- `lesson_run_materials`
+  Links lesson runs to the source study materials used to generate them.
+- `lesson_run_chunks`
+  Links lesson runs to the retrieved chunks used during generation.
+- `concept_mastery`
+  Tracks mastery and review scheduling signals by concept.
+- `question_attempts`
+  Stores quiz attempt history.
+- `question_reports`
+  Stores reported question issues or feedback.
 
----
+## SaaS Features
+- Email/password authentication with Supabase Auth
+- Saved study materials per user
+- Open saved PDFs from signed URLs when storage is private
+- Delete saved PDFs and related stored records
+- Free vs paid usage controls
+- Stripe-backed subscription support
+- Billing portal / subscription management support
+- Real per-file ingestion status during PDF import
 
-## What Makes This Different
+## Reliability / Production Behavior
+- The ingest API returns immediately after queueing, so long-running PDF work does not block the request lifecycle.
+- Upload failures stop material creation before broken `study_materials` rows are finalized.
+- Failed storage uploads do not leave orphaned DB records behind.
+- Worker-side failures clean up partial storage or DB writes for the affected file.
+- Storage cleanup runs when failed ingests or deleted materials need file removal.
+- Legacy broken `file_url` values no longer render as valid Open links.
+- Password validation now requires length, uppercase, lowercase, number, and special character before signup submission.
+- Signup only shows the email verification prompt after successful Supabase signup.
+- Supabase errors are surfaced to the UI instead of generic failure messages.
+- Per-file ingestion failures return clear `error_message` values to the frontend.
+- Verification email delivery depends on correct Supabase email provider / SMTP configuration in the deployed environment.
 
-Most learning tools:
-* Show content
-* Give quizzes
-* Move on regardless
+## Scaling Discussion
+### How I would scale this to 10k users
+- Use worker processes for storage upload verification, PDF parsing, chunking, embeddings, and retries.
+- Add retry policies for transient failures in storage, OpenAI, and embeddings generation.
+- Add rate limiting at auth, ingestion, and generation endpoints.
+- Cache expensive retrieval/generation metadata where safe.
+- Expand database indexing around ingestion lookup, retrieval paths, and usage checks.
+- Add structured observability: request ids, per-stage timing, ingestion traces, and alerting.
+- Add object-storage lifecycle policies and cleanup jobs for abandoned or rolled-back artifacts.
+- Introduce cost controls around token usage, model routing, and chunk-selection strategy.
 
-QuizML:
-* Enforces **100% mastery**
-* Adapts to mistakes
-* Uses **your actual materials**
-* Combines **AI + pedagogy**
+## Known Limitations
+- Status updates are delivered through polling, not WebSockets or SSE.
+- Large PDFs may still need more advanced worker autoscaling, chunked uploads, and job progress reporting.
+- AI cost optimization can still be expanded with more aggressive retrieval and caching strategies.
 
----
+## Future Work
+- Adaptive quiz engine with deeper personalization
+- Spaced repetition scheduling improvements
+- Rich embeddings search over saved materials
+- Admin dashboard for ingestion and subscription visibility
+- Analytics dashboard for learning progress and retention
+- Background workers for ingestion and generation pipelines
 
 ## Local Setup
-
 ```bash
 git clone https://github.com/LyndonYRB/quizml
 cd quizml
 npm install
 ```
 
-### Environment Variables
-
-Create a `.env.local` file:
-
-```env
-OPENAI_API_KEY=your_openai_key
-NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
-NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
-SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
-STRIPE_SECRET_KEY=sk_test_...
-STRIPE_WEBHOOK_SECRET=whsec_...
-STRIPE_PRICE_MONTHLY=price_...
-STRIPE_PRICE_YEARLY=price_...
-NEXT_PUBLIC_APP_URL=http://localhost:3000
-```
-
-Notes:
-
-* Local development should use Stripe test-mode keys, webhook secret, and price IDs.
-* `NEXT_PUBLIC_APP_URL` should stay `http://localhost:3000` for local development unless you are intentionally testing against another local domain.
-
----
-
-## Run Locally
+Create a `.env.local` file in the project root, then start the app:
 
 ```bash
 npm run dev
 ```
 
-Visit:
-http://localhost:3000
+Visit `http://localhost:3000`.
 
----
-
-## Stripe Setup
-
-Required environment variables:
-
-```env
-STRIPE_SECRET_KEY=sk_live_...
-STRIPE_WEBHOOK_SECRET=whsec_...
-STRIPE_PRICE_MONTHLY=price_...
-STRIPE_PRICE_YEARLY=price_...
-NEXT_PUBLIC_APP_URL=https://your-production-domain.com
-NEXT_PUBLIC_SUPABASE_URL=...
-NEXT_PUBLIC_SUPABASE_ANON_KEY=...
-SUPABASE_SERVICE_ROLE_KEY=...
-```
-
-Stripe configuration:
-
-* Create two recurring prices:
-  * Monthly
-  * Yearly
-* Set `STRIPE_PRICE_MONTHLY` and `STRIPE_PRICE_YEARLY` to the exact Stripe Price IDs that should grant Pro access.
-* Enable the Stripe Billing Portal.
-* Use one canonical webhook endpoint in production:
-  * `https://your-production-domain.com/api/stripe/webhook`
-* Use separate Stripe test-mode webhook endpoints and secrets for Preview and local development.
-
-Subscribe the webhook to these events:
-
-* `checkout.session.completed`
-* `customer.subscription.created`
-* `customer.subscription.updated`
-* `customer.subscription.deleted`
-* `invoice.paid`
-* `invoice.payment_failed`
-
-Notes:
-
-* Checkout Sessions and Billing Portal sessions are created entirely on the server, so `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` is not currently required unless frontend Stripe.js is added later.
-* If a subscription uses a price ID that does not match `STRIPE_PRICE_MONTHLY` or `STRIPE_PRICE_YEARLY`, QuizML will not grant Pro access and will log a diagnostic error so the mismatch is easier to spot.
-
----
-
-## Deployment
-
-QuizML.ai is designed to deploy cleanly on Vercel:
+Run the background worker in a separate terminal:
 
 ```bash
-vercel
+npm run worker
 ```
 
-Recommended Vercel environment separation:
+## Environment Variables
+Required application variables:
 
-* **Production**
-  * Use live Stripe values for `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_MONTHLY`, and `STRIPE_PRICE_YEARLY`
-  * Set `NEXT_PUBLIC_APP_URL` to your production domain
-* **Preview**
-  * Use Stripe test-mode values only
-  * Use a preview-safe `NEXT_PUBLIC_APP_URL` if you plan to test billing flows in preview deployments
-* **Development**
-  * Use local/test Stripe values only
-  * Keep `NEXT_PUBLIC_APP_URL=http://localhost:3000`
+```env
+OPENAI_API_KEY=
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_ANON_KEY=
+SUPABASE_SERVICE_ROLE_KEY=
+NEXT_PUBLIC_APP_URL=http://localhost:3000
+REDIS_URL=
+```
 
-Production should never share live Stripe secrets or webhook secrets with Preview or Development.
+Stripe variables:
 
----
+```env
+STRIPE_SECRET_KEY=
+STRIPE_WEBHOOK_SECRET=
+STRIPE_PRICE_MONTHLY=
+STRIPE_PRICE_YEARLY=
+```
 
-## Future Improvements
+Optional:
 
-* Semantic search over PDFs
-* Learning analytics dashboard
-* Spaced repetition system
-* Mobile optimization
-* Folder-based material organization
+```env
+SUPABASE_STUDY_MATERIALS_BUCKET=study-materials
+```
 
----
+Notes:
+- Use Stripe test-mode keys locally.
+- Keep `NEXT_PUBLIC_APP_URL=http://localhost:3000` for local development unless you intentionally change the local domain.
+- `REDIS_URL` is required for the BullMQ queue and worker.
+- Supabase Auth email verification requires a valid email provider / SMTP configuration in Supabase.
 
-## Author
+## Deployment
+QuizML is designed for Vercel deployment with Supabase, Stripe, and OpenAI configured through environment variables.
 
-**Lyndon St. Luce**
-M.S. Computer Science, Syracuse University
+The Next.js web application can deploy to Vercel, but the BullMQ ingestion worker is a separate long-running process. Vercel does not automatically run `npm run worker`, so production requires Redis plus a separately hosted worker process.
 
-* GitHub: https://github.com/LyndonYRB
-* Portfolio: https://lyndon-portfolio.netlify.app/
-* LinkedIn: https://www.linkedin.com/in/lyndon-stluce/
+The current queue payload includes base64-encoded PDF bytes for each file. That is acceptable for this stage of the project, but for larger-scale production workloads it should eventually move to storage-backed job payloads that pass references instead of full file contents.
 
----
+Recommended environment separation:
+- Production: live Stripe values, production app URL
+- Preview: Stripe test mode only
+- Development: local/test keys only
 
-## Final Note
+## Why This Project Matters
+QuizML is a good example of a modern AI SaaS system because it combines:
+- document ingestion
+- storage-backed asset handling
+- retrieval-oriented content processing
+- LLM-generated learning experiences
+- subscription logic
+- reliability fixes for real production failure modes
 
-This project demonstrates:
-
-* Full-stack development
-* AI integration
-* Real-world monetization
-* Production debugging and iteration
-
-Built to solve a real problem:
-Turning passive studying into active mastery.
+It is not just a UI demo. It includes the kinds of operational details that make an AI product usable in production: ingestion visibility, rollback behavior, private file access, deletion, usage gating, and SaaS billing integration.

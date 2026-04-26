@@ -6,12 +6,15 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "worker": "tsx lib/worker.ts"
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
     "@supabase/ssr": "^0.8.0",
     "@supabase/supabase-js": "^2.90.1",
+    "bullmq": "^5.76.2",
+    "ioredis": "^5.10.1",
     "next": "16.1.1",
     "openai": "^6.15.0",
     "pdfjs-dist": "^5.4.530",
@@ -28,6 +31,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.1.1",
     "tailwindcss": "^4",
+    "tsx": "^4.21.0",
     "typescript": "^5"
   }
 }

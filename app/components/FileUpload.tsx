@@ -92,6 +92,7 @@ interface StudyMaterialsResponse {
 
 interface IngestMaterialsResponse {
   success?: boolean;
+  enqueued?: boolean;
   studyMaterials?: StudyMaterial[];
   chunkCounts?: Record<string, number>;
   fileErrors?: Array<{
@@ -303,6 +304,10 @@ function ingestStatusClasses(status: IngestStatus) {
     default:
       return "bg-blue-500/15 text-blue-200";
   }
+}
+
+function isTerminalIngestStatus(status: IngestStatus) {
+  return status === "ready" || status === "failed";
 }
 
 function materialsSignature(materialIds: string[]) {
@@ -659,7 +664,7 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
     }
 
     setUploading(true);
-    setLoadingMsg("Processing your PDFs...");
+    setLoadingMsg("Queueing your PDFs for background processing...");
     setIngestFeedback(null);
     setFileStatuses(
       Object.fromEntries(
@@ -738,20 +743,17 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
       }, 1000);
 
       const ingestResponse = await ingestRequest;
-      stoppedPolling = true;
-      if (pollingInterval !== null) {
-        window.clearInterval(pollingInterval);
-      }
-      await pollIngestionStatuses();
 
       const ingestData = (await ingestResponse
         .json()
         .catch(() => ({}))) as IngestMaterialsResponse;
-      const ingestedMaterials = Array.isArray(ingestData.studyMaterials)
-        ? ingestData.studyMaterials
-        : [];
 
-      if (!ingestResponse.ok || !ingestData.success || ingestedMaterials.length === 0) {
+      if (!ingestResponse.ok || !ingestData.success || !ingestData.enqueued) {
+        stoppedPolling = true;
+        if (pollingInterval !== null) {
+          window.clearInterval(pollingInterval);
+        }
+        await pollIngestionStatuses();
         const failureMessage =
           ingestData.message ||
           ingestData.error ||
@@ -781,11 +783,38 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
         return;
       }
 
-      setLoadingMsg("Building your study library...");
+      setLoadingMsg("Processing queued PDFs...");
 
-      if (ingestData.fileErrors?.length) {
-        console.warn("Ingestion completed with file errors:", ingestData.fileErrors);
+      const deadline = Date.now() + 5 * 60 * 1000;
+      while (Date.now() < deadline) {
+        await pollIngestionStatuses();
+
+        const allTerminal = files.every((file) => {
+          const status = latestStatusesByClientFileId.get(file.clientFileId)?.status;
+          return status ? isTerminalIngestStatus(status) : false;
+        });
+
+        if (allTerminal) {
+          break;
+        }
+
+        await new Promise((resolve) => window.setTimeout(resolve, 1000));
       }
+
+      stoppedPolling = true;
+      if (pollingInterval !== null) {
+        window.clearInterval(pollingInterval);
+      }
+
+      await pollIngestionStatuses();
+
+      const readyIngestions = Array.from(latestStatusesByClientFileId.values()).filter(
+        (ingestion) =>
+          ingestion.status === "ready" && typeof ingestion.study_material_id === "string"
+      );
+      const failedIngestions = Array.from(latestStatusesByClientFileId.values()).filter(
+        (ingestion) => ingestion.status === "failed"
+      );
 
       setFileStatuses((current) =>
         Object.fromEntries(
@@ -816,7 +845,34 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
         )
       );
 
+      if (readyIngestions.length === 0) {
+        const failureDetails =
+          failedIngestions
+            .map(
+              (ingestion) =>
+                `${ingestion.file_name}: ${ingestion.error_message || "Import failed."}`
+            ) || [];
+
+        setIngestFeedback({
+          type: "error",
+          message: "No files were imported.",
+          details:
+            failureDetails.length > 0
+              ? failureDetails
+              : [
+                  "Background processing is taking longer than expected. Make sure the worker is running, then refresh your saved materials.",
+                ],
+        });
+        return;
+      }
+
       const refreshedMaterials = await refreshStudyMaterials();
+      const readyMaterialIds = readyIngestions
+        .map((ingestion) => ingestion.study_material_id)
+        .filter((materialId): materialId is string => Boolean(materialId));
+      const ingestedMaterials = refreshedMaterials.filter((material) =>
+        readyMaterialIds.includes(material.id)
+      );
       const nextStudyMaterials =
         refreshedMaterials.length > 0
           ? refreshedMaterials
@@ -827,16 +883,16 @@ export default function FileUpload({ isAuthed, userId, onOpenAuth }: FileUploadP
       setSelectedStudyMaterialIds(isPaid ? ingestedIds : ingestedIds.slice(0, 1));
       setFiles([]);
       setIngestFeedback({
-        type: ingestData.fileErrors?.length ? "partial" : "success",
-        message: ingestData.fileErrors?.length
+        type: failedIngestions.length ? "partial" : "success",
+        message: failedIngestions.length
           ? `Imported ${ingestedMaterials.length} file${
               ingestedMaterials.length === 1 ? "" : "s"
-            }, ${ingestData.fileErrors.length} failed.`
+            }, ${failedIngestions.length} failed.`
           : `Successfully imported ${ingestedMaterials.length} study material${
               ingestedMaterials.length === 1 ? "" : "s"
             }.`,
-        details: ingestData.fileErrors?.map((error) =>
-          `${error.fileName || "File"}: ${error.message || "Import failed."}`
+        details: failedIngestions.map((ingestion) =>
+          `${ingestion.file_name}: ${ingestion.error_message || "Import failed."}`
         ),
       });
       setShowFocusForm(true);
