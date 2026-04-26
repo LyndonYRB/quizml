@@ -5,6 +5,13 @@ import {
   type StudyMaterialIngestionJobPayload,
   type StudyMaterialIngestionRow,
 } from "@/lib/ingestion-processor";
+import {
+  buildStoredFileReference,
+  buildStudyMaterialStoragePath,
+  deleteStoredStudyMaterialFile,
+  getStudyMaterialsBucket,
+  uploadStudyMaterialFile,
+} from "@/lib/study-material-storage";
 import { getStudyMaterialIngestionQueue } from "@/lib/queue";
 import {
   createRouteClient,
@@ -13,6 +20,11 @@ import {
 
 const MAX_PDF_BYTES_FREE = 10 * 1024 * 1024;
 const MAX_PDF_BYTES_PAID = 50 * 1024 * 1024;
+
+type UploadedStorageTarget = {
+  fileName: string;
+  storedFileUrl: string;
+};
 
 export async function POST(request: NextRequest) {
   const response = NextResponse.next();
@@ -86,6 +98,8 @@ export async function POST(request: NextRequest) {
     }
 
     const ingestionOrder: StudyMaterialIngestionRow[] = [];
+    const uploadedStorageTargets: UploadedStorageTarget[] = [];
+    const studyMaterialsBucket = getStudyMaterialsBucket();
 
     for (const [index, file] of files.entries()) {
       const clientFileIdValue = clientFileIds[index];
@@ -135,6 +149,17 @@ export async function POST(request: NextRequest) {
       payloadFiles = await Promise.all(
         files.map(async (file, index) => {
           const clientFileId = String(clientFileIds[index]).trim();
+          const materialId = crypto.randomUUID();
+          const storagePath = buildStudyMaterialStoragePath({
+            userId,
+            materialId,
+            fileName: file.name,
+          });
+          const storedFileUrl = buildStoredFileReference(
+            studyMaterialsBucket,
+            storagePath
+          );
+
           const arrayBuffer = await file.arrayBuffer();
           const fileBuffer = Buffer.from(arrayBuffer);
 
@@ -142,11 +167,26 @@ export async function POST(request: NextRequest) {
             throw new Error(`${file.name} is empty and could not be uploaded.`);
           }
 
+          await uploadStudyMaterialFile({
+            supabase: supabaseAdmin,
+            bucket: studyMaterialsBucket,
+            path: storagePath,
+            body: fileBuffer,
+            contentType: file.type || "application/pdf",
+            fileSize: file.size,
+          });
+
+          uploadedStorageTargets.push({
+            fileName: file.name,
+            storedFileUrl,
+          });
+
           return {
             clientFileId,
             fileName: file.name,
-            fileBufferBase64: fileBuffer.toString("base64"),
-            contentType: file.type || "application/pdf",
+            materialId,
+            storagePath,
+            storedFileUrl,
           };
         })
       );
@@ -154,7 +194,13 @@ export async function POST(request: NextRequest) {
       const message =
         error instanceof Error
           ? error.message
-          : "Could not prepare uploaded PDFs for background processing.";
+          : "Could not upload PDFs for background processing.";
+      for (const target of uploadedStorageTargets) {
+        await deleteStoredStudyMaterialFile({
+          supabase: supabaseAdmin,
+          storedFileUrl: target.storedFileUrl,
+        });
+      }
       await failIngestionBatch({
         supabaseAdmin,
         ingestionRecords: ingestionOrder,
@@ -178,6 +224,12 @@ export async function POST(request: NextRequest) {
         userId,
         message,
       });
+      for (const target of uploadedStorageTargets) {
+        await deleteStoredStudyMaterialFile({
+          supabase: supabaseAdmin,
+          storedFileUrl: target.storedFileUrl,
+        });
+      }
       await failIngestionBatch({
         supabaseAdmin,
         ingestionRecords: ingestionOrder,

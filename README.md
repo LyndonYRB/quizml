@@ -57,7 +57,7 @@ Detailed flow:
 
 1. User uploads one or more PDFs from the web app.
 2. Files are sent to `/api/ingest-materials`.
-3. The API authenticates the user, creates `study_material_ingestions` rows, base64-encodes the uploaded files, and enqueues one BullMQ job.
+3. The API authenticates the user, creates `study_material_ingestions` rows, uploads each PDF to Supabase Storage, and enqueues one BullMQ job with storage references.
 4. A separate worker process picks up the job from Redis.
 5. Each PDF is uploaded to Supabase Storage.
 6. A `study_materials` row is created for each successful file.
@@ -218,7 +218,7 @@ QuizML is designed for Vercel deployment with Supabase, Stripe, and OpenAI confi
 
 The Next.js web application can deploy to Vercel, but the BullMQ ingestion worker is a separate long-running process. Vercel does not automatically run `npm run worker`, so production requires Redis plus a separately hosted worker process.
 
-The current queue payload includes base64-encoded PDF bytes for each file. That is acceptable for this stage of the project, but for larger-scale production workloads it should eventually move to storage-backed job payloads that pass references instead of full file contents.
+The queue now uses storage-backed job payloads instead of base64-encoded PDF bytes. Jobs carry storage references, which keeps the queue lightweight and avoids pushing large file bodies through Redis.
 
 Recommended environment separation:
 - Production: live Stripe values, production app URL

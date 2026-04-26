@@ -96,6 +96,40 @@ export async function deleteStoredStudyMaterialFile({
   }
 }
 
+export async function downloadStoredStudyMaterialFile({
+  supabase,
+  storedFileUrl,
+}: {
+  supabase: SupabaseClient;
+  storedFileUrl?: string | null;
+}) {
+  const location = parseStoredFileReference(storedFileUrl);
+  if (!location) {
+    throw new Error("Stored file reference is missing or invalid.");
+  }
+
+  const { data, error } = await supabase.storage
+    .from(location.bucket)
+    .download(location.path);
+
+  if (error || !data) {
+    throw new Error(error?.message || "Failed to download stored study material.");
+  }
+
+  const arrayBuffer = await data.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+
+  if (buffer.byteLength <= 0) {
+    throw new Error("Downloaded study material is empty.");
+  }
+
+  return {
+    buffer,
+    bucket: location.bucket,
+    path: location.path,
+  };
+}
+
 function parseStoredFileReference(storedFileUrl?: string | null): StorageLocation | null {
   if (!storedFileUrl || !storedFileUrl.startsWith("storage://")) {
     return null;

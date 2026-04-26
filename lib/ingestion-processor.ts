@@ -5,11 +5,9 @@ import {
 } from "./ingestion-embeddings";
 import { createServiceRoleClient } from "./supabase/server";
 import {
-  buildStoredFileReference,
-  buildStudyMaterialStoragePath,
+  downloadStoredStudyMaterialFile,
   deleteStoredStudyMaterialFile,
   getStudyMaterialsBucket,
-  uploadStudyMaterialFile,
 } from "./study-material-storage";
 
 const MIN_EXTRACTED_CHARS = 100;
@@ -32,8 +30,9 @@ export type StudyMaterialIngestionRow = {
 export type StudyMaterialIngestionJobFile = {
   clientFileId: string;
   fileName: string;
-  fileBufferBase64: string;
-  contentType?: string;
+  materialId: string;
+  storagePath: string;
+  storedFileUrl: string;
 };
 
 export type StudyMaterialIngestionJobPayload = {
@@ -184,24 +183,8 @@ async function processSingleQueuedFile({
   let storedFileUrl: string | null = null;
 
   try {
-    let fileBuffer: Buffer;
-    try {
-      fileBuffer = Buffer.from(file.fileBufferBase64, "base64");
-    } catch {
-      throw new Error(`Could not decode ${file.fileName} for processing.`);
-    }
-
-    if (fileBuffer.byteLength <= 0) {
-      throw new Error(`${file.fileName} is empty and could not be uploaded.`);
-    }
-
-    materialId = crypto.randomUUID();
-    const storagePath = buildStudyMaterialStoragePath({
-      userId,
-      materialId,
-      fileName: file.fileName,
-    });
-    storedFileUrl = buildStoredFileReference(studyMaterialsBucket, storagePath);
+    materialId = file.materialId;
+    storedFileUrl = file.storedFileUrl;
 
     await updateIngestionStatus({
       supabaseAdmin,
@@ -210,13 +193,8 @@ async function processSingleQueuedFile({
       errorMessage: null,
     });
 
-    await uploadStudyMaterialFile({
+    const { buffer: fileBuffer } = await downloadStoredStudyMaterialFile({
       supabase: supabaseAdmin,
-      bucket: studyMaterialsBucket,
-      path: storagePath,
-      body: fileBuffer,
-      contentType: file.contentType || "application/pdf",
-      fileSize: fileBuffer.byteLength,
     });
 
     await updateIngestionStatus({
